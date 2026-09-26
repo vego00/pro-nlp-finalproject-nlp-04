@@ -1,284 +1,137 @@
-import os
-import uuid
+﻿"""Free web research with local embeddings and persistent Qdrant retrieval."""
 import hashlib
-from datetime import datetime
+import logging
+import uuid
+from datetime import datetime, timezone, timedelta
+from functools import lru_cache
 
-from state.base import GlobalState
+from langchain_core.prompts import ChatPromptTemplate
+from qdrant_client import QdrantClient, models
+from config import config as settings
+from models.llm import get_llm
+from models.embeddings import embed_documents, embed_query, embedding_dimension
 from state.research import ResearchState, SearchQueries, SearchItem, ExtractedItem
 from prompts.research_prompts import RESEARCH_ANALYSIS_PROMPT, RESEARCH_QUERY_GEN_PROMPT
-from langchain_core.prompts import ChatPromptTemplate
-# from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_upstage import ChatUpstage, UpstageEmbeddings
-from langchain_tavily import TavilySearch
-from langchain_community.utilities import DuckDuckGoSearchAPIWrapper
-from langchain_community.tools import DuckDuckGoSearchResults
-from config.config import UPSTAGE_API_KEY
-from qdrant_client import QdrantClient
-from qdrant_client.http import models
-from qdrant_client.http.models import PointStruct, Document
-from config.config import API_KEY, TAVILY_API_KEY
 
-# MODEL_NAME = "gemini-3-pro-preview"
-MODEL_NAME_PRO = "solar-pro2"
-MODEL_NAME_MINI = "solar-mini"
-COLLECTION_NAME = "open-web-pages"
-STALE_DAYS = 7
+logger = logging.getLogger(__name__)
+# A separate collection prevents mixing vectors from different embedding models.
+COLLECTION_NAME = "web-" + hashlib.sha256(settings.EMBEDDING_MODEL.encode()).hexdigest()[:12]
 
-QDRANT_URL = os.getenv("QDRANT_URL")
-QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
 
-if QDRANT_URL and QDRANT_API_KEY:
-    qdrant_client = QdrantClient(
-        url=QDRANT_URL, 
-        api_key=QDRANT_API_KEY,
-    )
-else:
-    qdrant_client = QdrantClient(path="./qdrant_data")
+@lru_cache(maxsize=1)
+def get_store():
+    client = (QdrantClient(url=settings.QDRANT_URL, api_key=settings.QDRANT_API_KEY)
+              if settings.QDRANT_URL else QdrantClient(path=str(settings.QDRANT_PATH)))
+    if not client.collection_exists(COLLECTION_NAME):
+        client.create_collection(
+            COLLECTION_NAME,
+            vectors_config={"text-dense": models.VectorParams(
+                size=embedding_dimension(), distance=models.Distance.COSINE)},
+            sparse_vectors_config={"text-sparse": models.SparseVectorParams()})
+    return client
 
-if not qdrant_client.collection_exists(COLLECTION_NAME):
-    qdrant_client.create_collection(
-        collection_name=COLLECTION_NAME,
-        vectors_config={
-            "text-dense": models.VectorParams(
-                size=4096,
-                distance=models.Distance.COSINE
-            )
-        },
-        sparse_vectors_config={
-            "text-sparse": models.SparseVectorParams(
-                index=models.SparseIndexParams(on_disk=False)
-            )
-        }
-    )
-    print(f"Qdrant '{COLLECTION_NAME}' 콜렉션이 생성되었습니다.")
-else:
-    print(f"Qdrant '{COLLECTION_NAME}' 콜렉션이 이미 존재합니다.")
 
-qdrant_client.create_payload_index(
-    COLLECTION_NAME,
-    field_name="url",
-    field_schema="keyword",
-)
-
-def research_generate(state: GlobalState) -> GlobalState:
-    # 생성
+def research_generate(state):
     return state
 
-def research_evaluate(state: GlobalState) -> GlobalState:
-    # 평가
+
+def research_evaluate(state):
     return state
 
-def research_eval_router(state: GlobalState) -> str:
-    # 평가 결과에 따라 pass retry 결정
+
+def research_eval_router(state):
     return "pass"
 
-from datetime import datetime, timezone
-
-def check_db_freshness(client: QdrantClient, collection_name: str, url: str, stale_days: int = 7):
-    try:
-        # 필터링을 사용하여 특정 URL 검색
-        search_result, _ = client.scroll(
-            collection_name=collection_name,
-            scroll_filter=models.Filter(
-                must=[
-                    models.FieldCondition(
-                        key="url", 
-                        match=models.MatchValue(value=url),
-                    ),
-                ]
-            ),
-            limit=1,
-            with_payload=True
-        )
-
-        if not search_result:
-            return {"is_indexed": False, "is_stale": False}
-
-        record = search_result[0]
-        last_scraped_str = record.payload.get("last_scraped_at")
-        
-        if not last_scraped_str:
-            return {"is_indexed": True, "is_stale": True} # 날짜 정보 없으면 업데이트 필요로 간주
-
-        last_scraped_dt = datetime.fromisoformat(last_scraped_str)
-        if last_scraped_dt.tzinfo is None:
-            last_scraped_dt = last_scraped_dt.replace(tzinfo=timezone.utc)
-        now = datetime.now(timezone.utc)
-        
-        is_stale = (now - last_scraped_dt).days >= stale_days
-        return {"is_indexed": True, "is_stale": is_stale}
-
-    except Exception as e:
-        print(f"Error checking Qdrant: {e}")
-        return {"is_indexed": False, "is_stale": False}
 
 def generate_queries(state: ResearchState):
-    """
-    Pydantic과 Structured Output을 사용하여 구조화된 검색 쿼리를 생성.
-    """
-    question = state.question
-    print(f"\n--- [Node: Query Generator] 분석 중: {question} ---")
-    
     prompt = ChatPromptTemplate.from_messages([
-        ("system", RESEARCH_QUERY_GEN_PROMPT),
-        ("human", "{question}")
-    ])
-    
-    llm = ChatUpstage(model=MODEL_NAME_PRO, temperature=0.1, api_key=UPSTAGE_API_KEY)
-    structured_llm = llm.with_structured_output(SearchQueries)
-    
-    query_chain = prompt | structured_llm
-    result = query_chain.invoke({"question": question})
-    
-    return {"search_queries": result.queries}
+        ("system", RESEARCH_QUERY_GEN_PROMPT), ("human", "{question}")])
+    chain = prompt | get_llm(temperature=0.1).with_structured_output(SearchQueries)
+    result = chain.invoke({"question": state.question})
+    queries = [q.strip() for q in result.queries if q.strip()]
+    return {"search_queries": (queries or [state.question])[:settings.SEARCH_MAX_QUERIES]}
+
 
 def search_with_tavily(state: ResearchState):
-    queries = state.search_queries
-    search = TavilySearch(
-        max_results=5,
-        search_depth="basic",
-        include_raw_content=True,
-        tavily_api_key=TAVILY_API_KEY
-    )
-    search_results = []
+    """Historical node name; provider is selected in config.py."""
+    results = {}
+    failures = []
+    for query in state.search_queries[:settings.SEARCH_MAX_QUERIES]:
+        try:
+            if settings.SEARCH_PROVIDER == "tavily":
+                if not settings.TAVILY_API_KEY:
+                    raise ValueError("TAVILY_API_KEY가 필요합니다.")
+                from langchain_tavily import TavilySearch
+                output = TavilySearch(max_results=settings.SEARCH_MAX_RESULTS,
+                    search_depth="basic", include_raw_content=False,
+                    tavily_api_key=settings.TAVILY_API_KEY).invoke({"query": query})
+                rows = output.get("results", []) if isinstance(output, dict) else []
+            elif settings.SEARCH_PROVIDER == "duckduckgo":
+                from ddgs import DDGS
+                rows = DDGS(timeout=15).text(query, max_results=settings.SEARCH_MAX_RESULTS,
+                                             backend="duckduckgo")
+            else:
+                raise ValueError(f"지원하지 않는 SEARCH_PROVIDER: {settings.SEARCH_PROVIDER}")
+            for row in rows:
+                url = row.get("url") or row.get("href", "")
+                if not url.startswith(("https://", "http://")):
+                    continue
+                snippet = (row.get("content") or row.get("body") or "")[:1800]
+                results[url] = SearchItem(query=query, title=row.get("title", url),
+                    url=url, snippet=snippet, content=snippet)
+        except Exception as exc:
+            logger.warning("Search failed for %s: %s", query, exc)
+            failures.append(type(exc).__name__)
+    if not results:
+        raise RuntimeError("웹 검색 결과가 없습니다. 네트워크 또는 검색 제공자 설정을 확인하세요."
+                           + (" (" + ", ".join(failures) + ")" if failures else ""))
+    return {"search_results": list(results.values())}
 
-    for query in queries:
-        output = search.invoke({"query": query})
-        if isinstance(output, str):
-            continue
-        for res in output["results"]:
-            url = res.get("url", "")
-            db_status = check_db_freshness(qdrant_client, COLLECTION_NAME, url, STALE_DAYS)
-
-            item = SearchItem(
-                query=query,
-                title=res.get("title", "No Title"),
-                url=res.get("url", ""),
-                snippet=res.get("content", ""),
-                content=res.get("raw_content", res.get("content", "")),
-                is_indexed=db_status["is_indexed"],
-                is_stale=db_status["is_stale"],
-            )
-            search_results.append(item)
-
-    return {"search_results": search_results}
 
 def upsert_qdrant(state: ResearchState):
-    target_results = [result for result in state.search_results if result.is_indexed == False]
-    print(f"\n--- [Node: Upsert Qdrant] 신규 검색 결과 업로드 중: 총 {len(target_results)}건 ---")
-    if len(target_results) == 0: return state
+    if not state.search_results:
+        return {}
+    client = get_store()
+    vectors = embed_documents([item.snippet for item in state.search_results])
+    points = []
+    for item, vector in zip(state.search_results, vectors):
+        points.append(models.PointStruct(
+            id=str(uuid.uuid5(uuid.NAMESPACE_URL, item.url)),
+            payload={"title": item.title, "url": item.url, "content": item.snippet,
+                     "text_type": "snippet", "last_scraped_at": datetime.now(timezone.utc).isoformat()},
+            vector={"text-dense": vector,
+                    "text-sparse": models.Document(text=item.snippet, model="qdrant/bm25")}))
+    client.upsert(COLLECTION_NAME, points=points)
+    return {}
 
-    passage_embeddings = UpstageEmbeddings(
-        api_key=UPSTAGE_API_KEY,
-        model="embedding-passage"
-    )
-    try:
-        doc_results = passage_embeddings.embed_documents(
-            [result.snippet for result in target_results]
-        )
-        qdrant_client.upsert(
-            COLLECTION_NAME,
-            points=[
-                PointStruct(
-                    id=str(uuid.uuid4()),
-                    payload={
-                        "title": target_result.title,
-                        "url": target_result.url,
-                        "text_type": "snippet",
-                        "content": target_result.snippet,
-                        "page_hash": hashlib.sha256(target_result.snippet.encode('utf-8')).hexdigest(),
-                        "last_scraped_at": datetime.now() if target_result.last_scraped_at is None else target_result.last_scraped_at
-                    },
-                    vector={
-                        "text-dense": doc_results[idx],
-                        "text-sparse": Document(
-                            text=target_result.snippet,
-                            model="qdrant/bm25"
-                        )
-                    }
-                )
-                for idx, target_result in enumerate(target_results)
-            ]
-        )
-    except Exception as e:
-        print(f"Failed: {e}")
-
-    return state
 
 def execute_hybrid_search(state: ResearchState):
-    query_embeddings = UpstageEmbeddings(
-        api_key=UPSTAGE_API_KEY,
-        model="embedding-query"
-    )
-    query_embedding = query_embeddings.embed_documents(
-        [state.question]
-    )[0]
-    
-    queried_results = qdrant_client.query_points(
+    if not state.search_results:
+        return {}
+    # Restrict retrieval to this search batch: no unrelated/stale project evidence.
+    current_urls = [item.url for item in state.search_results]
+    query_filter = models.Filter(must=[
+        models.FieldCondition(key="url", match=models.MatchAny(any=current_urls))])
+    result = get_store().query_points(
         collection_name=COLLECTION_NAME,
         prefetch=[
-            # (1) Dense 벡터 검색 (Semantic)
-            models.Prefetch(
-                query=query_embedding,
-                using="text-dense",
-                limit=10,
-            ),
-            # (2) Sparse 벡터 검색 (Keyword)
-            models.Prefetch(
-                query=Document(
-                    text=state.question,
-                    model="qdrant/bm25"
-                ),
-                using="text-sparse",
-                limit=10,
-            ),
-        ],
-        # (3) 두 결과를 RRF로 통합
-        query=models.FusionQuery(
-            fusion=models.Fusion.RRF
-        ),
-        limit=5 # 최종 결과 개수
-    )
+            models.Prefetch(query=embed_query(state.question), using="text-dense",
+                            filter=query_filter, limit=10),
+            models.Prefetch(query=models.Document(text=state.question, model="qdrant/bm25"),
+                            using="text-sparse", filter=query_filter, limit=10)],
+        query=models.FusionQuery(fusion=models.Fusion.RRF), limit=5)
+    return {"search_results": [ExtractedItem(
+        title=p.payload["title"], url=p.payload["url"], content=p.payload["content"],
+        score=p.score) for p in result.points]}
 
-    extracted_results = []
-    for result in queried_results.points:
-        payload = result.payload
-        item = ExtractedItem(
-            item_type=payload.get("text_type"),
-            title=payload.get("title"),
-            url=payload.get("url"),
-            content=payload.get("content"),
-            score=result.score
-        )
-        extracted_results.append(item)
-
-    return {"search_results": extracted_results}
 
 def analysis_search_results(state: ResearchState):
-    """
-    Docstring for analysis_search_results
-    
-    :param state: Description
-    :type state: ResearchState
-    """
-    question = state.question
-    search_results = state.search_results
-    print(f"\n--- [Node: Search Results Analyst] 분석 중: {question} ---")
-
-    summary = ""
-    # results_top5 = sorted(search_results, key=lambda x: x.score)[-5:]
-    for result in search_results:
-        summary += f"### <자료 제목> {result.title}\n\n<자료 내용>{result.content}\n\n\n"
-    
+    summary = "\n\n".join(f"### {r.title}\n출처: {r.url}\n{r.content}"
+                          for r in state.search_results)
     prompt = ChatPromptTemplate.from_messages([
         ("system", RESEARCH_ANALYSIS_PROMPT),
         ("human", "## 참고 자료(관련 검색 결과)\n{summary}"),
-        ("human", "{question}"),
-    ])
-
-    llm = ChatUpstage(model=MODEL_NAME_PRO, temperature=0.1, api_key=API_KEY)
-
-    query_chain = prompt | llm
-    analysis_result = query_chain.invoke({"question": question, "summary": summary})
-
-    return {"analysis_result": analysis_result.text}
+        ("human", "{question}")])
+    result = (prompt | get_llm(temperature=0.1)).invoke(
+        {"question": state.question, "summary": summary})
+    return {"analysis_result": result.content}

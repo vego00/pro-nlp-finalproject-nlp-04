@@ -1,0 +1,17 @@
+{
+  "name": "div-document-editor",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:editor": "esbuild src/web/editor/editor.js --bundle --minify --format=iife --outfile=src/web/static/editor.bundle.js --legal-comments=linked"
+  },
+  "dependencies": {
+    "@tiptap/core": "^3.0.0",
+    "@tiptap/starter-kit": "^3.0.0",
+    "@tiptap/markdown": "^3.0.0",
+    "@tiptap/extension-list": "^3.0.0",
+    "@tiptap/extension-table": "^3.0.0",
+    "@tiptap/extensions": "^3.0.0"
+  },
+  "devDependencies": {"esbuild": "^0.25.0"}
+}

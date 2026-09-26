@@ -175,7 +175,7 @@ def supervisor_node(state: GlobalState) -> GlobalState:
     # 사용자 응답과 현재 상태를 파악 후, 분기
     else:
         routing_context = summary_state(state)
-        response = get_llm(max_tokens=10000).invoke([
+        response = get_llm(max_tokens=10000, json_mode=True).invoke([
             SystemMessage(content=ROUTING_PROMPT),
             HumanMessage(content=routing_context),
             ])
@@ -229,9 +229,7 @@ def edit(state: GlobalState) -> GlobalState:
     }
 
     result = edit_subgraph.invoke(edit_state)
-    regenerated_content = result.get('regenerated_content')
-    
-    return {}
+    return {"plan": result.get("plan", state["plan"])}
 
 def ask_user(state: GlobalState) -> GlobalState:
     # 다른 에이전트가 사용자에게 전달할 내용이 있을 시

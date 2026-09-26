@@ -1,5 +1,16 @@
 # DIV(Design In Vibe): AI-Powered Agentic Writing Assistant
 
+## FastAPI + HTML 대시보드 (기본 실행)
+
+```powershell
+uv sync
+uv run uvicorn web.app:app --app-dir src --host 127.0.0.1 --port 8000
+```
+
+http://127.0.0.1:8000 에서 사용합니다. `src/config/config.py`의 `DEFAULT_LLM_PROVIDER`, `DEFAULT_LLM_MODEL`을 수정하고 서버를 재시작하면 모델을 변경할 수 있습니다. `.env`에 지정한 모델 설정이 있으면 우선 적용됩니다.
+
+기본값은 무료 로컬 Ollama 모델입니다. 모델 설치와 환경변수, 대시보드 기능은 [대시보드 실행 안내](docs/dashboard.md)를 참고하세요. 아래 Streamlit 실행 방법은 기존 UI용입니다.
+
 **DIV(Design In Vibe)** is an advanced AI agent system designed to transform abstract user ideas into concrete, comprehensive project plans and documents. Built with **LangGraph** and **Streamlit**, it orchestrates a team of specialized agents—Idea, Plan, Research, and Visual—under a central Supervisor to collaboratively author high-quality content.
 
 ---
@@ -127,6 +138,8 @@ TAVILY_API_KEY=your_tavily_api_key
 ---
 
 ## ▶️ Usage
+
+기획서 정량 평가 에이전트의 실행 방법과 지표 정의는 [평가 에이전트 문서](docs/evaluation_agent.md)를 참고하세요.
 
 Run the Streamlit application using `uv`:
 

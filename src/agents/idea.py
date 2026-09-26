@@ -51,7 +51,7 @@ def creator_node(state: InternalState):
     logger = get_logger()
     system_msg = SystemMessage(content=CREATOR_PROMPT)
     user_input = state['user_response']
-    llm = get_llm(temperature=0.3, max_tokens=5000, reasoning_effort='high').bind(response_format={"type": "json_object"})
+    llm = get_llm(temperature=0.3, max_tokens=5000, reasoning_effort='high', json_mode=True)
     
     # 현재 상황(Context)을 LLM이 알기 쉽게 정리
     context_info = f"""
@@ -88,7 +88,7 @@ def updater_node(state: InternalState):
     logger = get_logger()
     system_msg = SystemMessage(content=UPDATER_PROMPT)
     user_input = state['user_response']
-    llm = get_llm(temperature=0.5, max_tokens=5000, reasoning_effort='high').bind(response_format={"type": "json_object"})
+    llm = get_llm(temperature=0.5, max_tokens=5000, reasoning_effort='high', json_mode=True)
     
     # 현재 상황(Context)을 LLM이 알기 쉽게 정리
     context_info = f"""
@@ -122,7 +122,7 @@ def updater_node(state: InternalState):
 
 def questioner_node(state: InternalState):
     system_msg = SystemMessage(content=QUESTIONER_PROMPT)
-    llm = get_mini_llm(temperature=0.5, max_tokens=4000).bind(response_format={"type": "json_object"})
+    llm = get_mini_llm(temperature=0.5, max_tokens=4000, json_mode=True)
 
     intent = state.get("internal_user_intent")
     # 의도가 불분명한 경우 (AMBIGUOUS)

@@ -16,3 +16,10 @@ wheels/
 output/
 logs/
 exp/
+
+# Local models, databases, and portable runtime
+.cache/
+.runtime/
+data/
+qdrant_data/
+node_modules/

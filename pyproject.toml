@@ -16,6 +16,15 @@ dependencies = [
     "pandas>=2.2.3",
     "kaleido>=0.2.1",
     "streamlit>=1.54.0",
+    "langchain-ollama>=1.0.1",
+    "langchain-openai>=1.1.0",
+    "fastapi>=0.115.0",
+    "uvicorn>=0.34.0",
+    "httpx>=0.28.0",
+    "fastembed>=0.7.0",
+    "ddgs>=9.10.0",
+    "markdown-it-py>=3.0.0",
+    "bleach>=6.2.0",
 ]
 
 [dependency-groups]

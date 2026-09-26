@@ -47,6 +47,7 @@ class ResearchRequestState(TypedDict):
 
 
 class GlobalState(TypedDict):
+    evaluation: Dict[str, Any]
     messages: Annotated[list, add_messages]
     awaiting_input: Annotated[bool, '입력 대기 여부']
     input_request: Annotated[str | None, '입력 요청']
