@@ -1,7 +1,7 @@
 # 로컬 PostgreSQL 실행
 
 Windows에 PostgreSQL을 설치하지 않고 Docker Desktop으로 실행한다.
-현재 Compose 구성은 DB 실행 환경을 제공하며, 앱의 세션·문서 저장은 아직 DB와 연결되지 않았다.
+Compose는 DB 실행 환경을 제공하며, 앱의 세션·문서 저장은 아래 마이그레이션 적용 후 사용할 수 있다.
 
 ## 최초 준비
 
@@ -61,3 +61,41 @@ docker compose exec -T postgres sh -c 'pg_dump -U postgres -d "$POSTGRES_DB" -Fc
 
 공식 안내: [Docker Desktop WSL 연결](https://docs.docker.com/desktop/features/wsl/),
 [PostgreSQL 이미지와 초기화 설정](https://hub.docker.com/_/postgres).
+
+## 애플리케이션 저장 기능
+
+```bash
+uv sync
+uv run alembic upgrade head
+uv run uvicorn web.app:app --app-dir src --host 127.0.0.1 --port 8000
+```
+
+`.env`의 `DATABASE_URL`이 필요하다. 마이그레이션은 앱 시작 전에 명시적으로 실행한다.
+앱은 단일 프로세스(`--workers 1`)로 실행한다. 로그인 없는 로컬 개발용이며,
+고정 개발 사용자 소유로 문서·초안·대화·AI 결과를 PostgreSQL에 저장한다.
+서버 시작 시 미완료 AI 요청은 중단 오류로 표시하며 자동 재실행하지 않는다.
+
+기존 파일 가져오기(원본 보존, 기존 ID는 건너뜀):
+
+```bash
+PYTHONPATH=src uv run python -m storage.import_drafts output/drafts --dry-run
+PYTHONPATH=src uv run python -m storage.import_drafts output/drafts
+```
+
+DB 통합 테스트는 `TEST_DATABASE_URL`에 별도 `_test` DB를 설정한다.
+그 DB에 먼저 마이그레이션을 적용한 뒤 `uv run pytest -q`를 실행한다.
+테스트는 해당 DB의 세션·문서·개발 사용자 데이터를 초기화한다.
+변수가 없으면 DB 통합 테스트를 건너뛴다.
+
+Windows Edge 브라우저 테스트는 기존 명령을 사용한다. Linux Chromium 환경에서는
+`BROWSER_CHANNEL='' uv run python tests/dashboard_browser_smoke.py`로 실행한다.
+
+프로세스 강제 종료·재시작 및 브라우저 검증을 함께 실행하려면, 마이그레이션이
+적용된 전용 `TEST_DATABASE_URL`을 설정한 뒤 다음 명령을 실행한다.
+테스트 API는 사용 가능한 임시 포트에서 실행 후 종료되며, 테스트 문서가 DB에 남는다.
+
+```bash
+uv run python tests/dashboard_restart_smoke.py
+```
+
+Linux에서는 설치한 Chromium을 쓰도록 `BROWSER_CHANNEL=''`을 지정할 수 있다.

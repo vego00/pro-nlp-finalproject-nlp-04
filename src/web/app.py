@@ -9,7 +9,11 @@ from uuid import uuid4
 
 import bleach
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import JSONResponse
+from sqlalchemy.exc import SQLAlchemyError
+from storage import repository as store
+from storage.database import get_engine
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
@@ -19,7 +23,6 @@ from pydantic import BaseModel, Field, field_validator
 from config import config as settings
 
 STATIC = Path(__file__).parent / "static"
-sessions = {}
 tasks = set()
 # Existing agents share a local vector store and output files: serialize runs.
 run_lock = asyncio.Lock()
@@ -28,9 +31,11 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app):
+    await store.initialize()
     yield
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
+    await get_engine().dispose()
 
 
 app = FastAPI(title="DIV · Vibe Planner", lifespan=lifespan)
@@ -78,9 +83,9 @@ def render_markdown(markdown):
 
 def snapshot(session):
     state = session["state"]
-    markdown = document(state)
+    markdown = session.get("markdown", "")
     draft = session.get("draft", "")
-    return {"id": session["id"], "status": session["status"], "error": session["error"],
+    return {"document_id": session["document_id"], "title": session["title"], "draft_revision": session["draft_revision"], "updated_at": session["updated_at"], "id": session["id"], "status": session["status"], "error": session["error"],
             "stage": state["supervision"].get("current_task"),
             "messages": [{"role": m.type, "content": m.content} for m in state["messages"]
                          if m.type in {"human", "ai"}],
@@ -92,28 +97,45 @@ def snapshot(session):
             "outline": state.get("idea", {}).get("toc", [])}
 
 
-def find_session(session_id):
-    if session_id not in sessions:
-        raise HTTPException(404, "세션이 없습니다. 새 문서를 시작하세요.")
-    return sessions[session_id]
+async def find_session(session_id):
+    return await store.get(session_id)
+
+
+@app.exception_handler(SQLAlchemyError)
+async def database_error(request, exc):
+    logger.error("Database operation failed: %s", type(exc).__name__)
+    return JSONResponse(status_code=503, content={"detail": "저장소에 연결할 수 없습니다. 다시 시도하세요."})
 
 
 async def run(session, response):
+    token = session["run_token"]
     try:
         async with run_lock:
             state = deepcopy(session["state"])
             state["user_response"] = response
             for _ in range(settings.GRAPH_MAX_ROUNDS):
                 state = await asyncio.to_thread(invoke_graph, state)
+                previous = session["state"]
                 session["state"] = deepcopy(state)
+                try:
+                    await store.checkpoint(session, token, document(state))
+                    session["markdown"] = document(state)
+                except Exception:
+                    session["state"] = previous
+                    raise
                 if state["supervision"].get("last_decision") != "Refresh":
+                    await store.checkpoint(session, token, session["markdown"], "ready")
                     session["status"] = "ready"
                     return
             raise RuntimeError("기획 단계 반복 한도에 도달했습니다. 현재 문서를 확인한 뒤 다시 요청하세요.")
     except Exception as exc:
         logger.exception("Planning failed for session %s", session["id"])
         session["status"] = "error"
-        session["error"] = f"{type(exc).__name__}: {exc}"
+        session["error"] = "기획 작업에 실패했습니다. 마지막 저장본은 유지됩니다."
+        try:
+            await store.checkpoint(session, token, session.get("markdown", ""), "error", session["error"])
+        except SQLAlchemyError:
+            logger.error("Failed to persist interrupted run")
 
 
 @app.get("/")
@@ -148,15 +170,17 @@ async def health():
 
 @app.post("/api/sessions", status_code=201)
 async def create_session():
-    session_id = uuid4().hex
-    session = {"id": session_id, "state": initial_state(), "status": "ready", "error": None}
-    sessions[session_id] = session
-    return snapshot(session)
+    return snapshot(await store.create(initial_state()))
+
+
+@app.get("/api/sessions")
+async def list_sessions(limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0)):
+    return await store.listing(limit, offset)
 
 
 @app.get("/api/sessions/{session_id}")
 async def get_session(session_id: str):
-    return snapshot(find_session(session_id))
+    return snapshot(await find_session(session_id))
 
 
 class Message(BaseModel):
@@ -168,6 +192,7 @@ class Message(BaseModel):
 class Draft(BaseModel):
     markdown: str = Field(max_length=200000)
     document: dict | None = None
+    base_revision: int = Field(ge=0)
 
     @field_validator("document")
     @classmethod
@@ -182,20 +207,13 @@ class Draft(BaseModel):
 
 @app.put("/api/sessions/{session_id}/draft")
 async def save_draft(session_id: str, draft: Draft):
-    session = find_session(session_id)
-    folder = settings.ROOT_DIR / "output" / "drafts"
-    folder.mkdir(parents=True, exist_ok=True)
-    target = folder / f"{session_id}.md"
-    temporary = target.with_suffix(".tmp")
-    temporary.write_text(draft.markdown, encoding="utf-8")
-    temporary.replace(target)
-    json_target = target.with_suffix(".json")
-    json_temp = json_target.with_suffix(".json.tmp")
-    json_temp.write_text(json.dumps({"markdown": draft.markdown, "document": draft.document}, ensure_ascii=False), encoding="utf-8")
-    json_temp.replace(json_target)
-    session["draft"] = draft.markdown
-    session["draft_document"] = draft.document
-    return {"draft": draft.markdown, "draft_html": render_markdown(draft.markdown), "draft_document": draft.document}
+    return snapshot(await store.save(session_id, draft.markdown, draft.document, draft.base_revision))
+
+
+@app.post("/api/sessions/{session_id}/copy", status_code=201)
+async def copy_session(session_id: str, draft: Draft):
+    await find_session(session_id)
+    return snapshot(await store.create(initial_state(), draft.markdown, draft.document))
 
 
 class Revision(BaseModel):
@@ -223,11 +241,12 @@ def revise_passage(request: Revision):
 
 @app.post("/api/sessions/{session_id}/revise")
 async def revise(session_id: str, request: Revision):
-    session = find_session(session_id)
+    session = await find_session(session_id)
     if not request.selection.strip() or not request.instruction.strip():
         raise HTTPException(422, "수정할 문장과 요청을 입력하세요.")
     if session.get("revising") or session["status"] == "running":
         raise HTTPException(409, "진행 중인 AI 요청이 끝난 후 다시 요청하세요.")
+    token = await store.claim(session_id, session["state"])
     session["revising"] = True
     try:
         async with run_lock:
@@ -237,19 +256,19 @@ async def revise(session_id: str, request: Revision):
         logger.exception("Passage revision failed")
         raise HTTPException(502, "수정안을 생성하지 못했습니다. 모델 연결을 확인하고 다시 시도하세요. 원문은 유지됩니다.")
     finally:
-        session["revising"] = False
+        await store.checkpoint(session, token, session["markdown"], "ready")
 
 
 @app.get("/api/sessions/{session_id}/draft/download")
 async def download_draft(session_id: str):
-    draft = find_session(session_id).get("draft", "")
+    draft = (await find_session(session_id)).get("draft", "")
     return Response(draft, media_type="text/markdown; charset=utf-8",
                     headers={"Content-Disposition": 'attachment; filename="vibe-draft.md"'})
 
 
 @app.post("/api/sessions/{session_id}/messages", status_code=202)
 async def send_message(session_id: str, message: Message):
-    session = find_session(session_id)
+    session = await find_session(session_id)
     if session["status"] == "running" or session.get("revising"):
         raise HTTPException(409, "현재 요청을 처리 중입니다.")
     wants_form = session["state"]["supervision"].get("request_type") == "idea_form"
@@ -265,6 +284,7 @@ async def send_message(session_id: str, message: Message):
         if message.include_draft and session.get("draft", "").strip():
             response = (f"사용자가 작성한 기획서 초안입니다. 아래 초안을 참고하여 요청을 처리하세요.\n"
                         f"<user_draft>\n{session['draft']}\n</user_draft>\n\n사용자 요청: {response}")
+    session["run_token"] = await store.claim(session_id, session["state"])
     session.update(status="running", error=None)
     task = asyncio.create_task(run(session, response))
     tasks.add(task)
@@ -274,7 +294,7 @@ async def send_message(session_id: str, message: Message):
 
 @app.get("/api/sessions/{session_id}/download")
 async def download(session_id: str):
-    markdown = document(find_session(session_id)["state"])
+    markdown = (await find_session(session_id))["markdown"]
     if not markdown:
         raise HTTPException(404, "아직 생성된 문서가 없습니다.")
     return Response(markdown, media_type="text/markdown; charset=utf-8",

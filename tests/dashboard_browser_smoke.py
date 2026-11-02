@@ -4,7 +4,7 @@ import os
 from playwright.sync_api import sync_playwright, expect
 
 with sync_playwright() as p:
-    browser = p.chromium.launch(channel="msedge", headless=True)
+    browser = p.chromium.launch(channel=os.getenv("BROWSER_CHANNEL", "msedge") or None, headless=True)
     page = browser.new_page(viewport={"width":1560,"height":1080})
     errors = []
     page.on("pageerror", lambda error: errors.append(str(error)))
@@ -99,6 +99,36 @@ with sync_playwright() as p:
     assert page.request.get(f"{base}/api/sessions/{first_session}").json()["draft"]
     expect(content).to_have_text("")
     expect(page.locator('#editor-toolbar [data-editor-action="undo"]')).to_be_disabled()
+    current = page.evaluate("localStorage.getItem('div-session')")
+    assert page.request.put(f"{base}/api/sessions/{current}/draft", data={"markdown":"다른 탭의 최신본", "base_revision":0}).status == 200
+    content.click()
+    page.keyboard.insert_text("내 편집 사본")
+    expect(page.locator('#draft-conflict')).to_be_visible(timeout=10000)
+    assert page.request.get(f"{base}/api/sessions/{current}").json()['draft'] == '다른 탭의 최신본'
+    page.locator('#copy-draft').click()
+    page.wait_for_function("old => localStorage.getItem('div-session') !== old", arg=current)
+    expect(content).to_contain_text('내 편집 사본')
+    page.locator('#refresh-documents').click()
+    expect(page.locator('#document-list')).to_contain_text('다른 탭의 최신본')
+    page.locator('#document-list button').filter(has_text='다른 탭의 최신본').first.click()
+    expect(content).to_contain_text('다른 탭의 최신본')
+    latest = page.request.get(f"{base}/api/sessions/{current}").json()
+    assert page.request.put(f"{base}/api/sessions/{current}/draft", data={"markdown":"최종 서버 내용", "base_revision":latest['draft_revision']}).status == 200
+    content.click()
+    page.keyboard.insert_text("복구 캐시에 보관할 내용")
+    expect(page.locator('#draft-conflict')).to_be_visible(timeout=10000)
+    page.locator('#reload-draft').click()
+    expect(content).to_have_text('최종 서버 내용')
+    expect(page.locator('#draft-conflict')).to_be_hidden()
+    assert page.evaluate("Object.keys(localStorage).some(k => k.startsWith('div-recovery-') && localStorage[k].includes('복구 캐시에 보관할 내용'))")
+    page.screenshot(path="output/postgresql-storage-desktop.png", full_page=True)
+    page.set_viewport_size({"width":390,"height":844})
+    assert not page.evaluate("document.documentElement.scrollWidth > innerWidth")
+    expect(page.locator('#refresh-documents')).to_be_visible()
+    expect(page.locator('#new')).to_be_visible()
+    page.locator('#refresh-documents').click()
+    expect(page.locator('#document-list')).to_contain_text('최종 서버 내용')
+    page.screenshot(path="output/postgresql-storage-mobile.png", full_page=True)
     assert not errors, errors
     print("Rich editing, slash commands, tables, checklist, persistence, AI apply/undo/conflict, export, mobile: OK")
     browser.close()

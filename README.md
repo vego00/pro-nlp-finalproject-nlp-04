@@ -15,7 +15,7 @@ http://127.0.0.1:8000 에서 사용합니다. `src/config/config.py`의 `DEFAULT
 
 ---
 
-로컬 PostgreSQL 실행 환경은 [Docker Desktop + PostgreSQL 안내](docs/postgresql-local.md)를 참고하세요. 앱의 DB 영속화는 후속 구현 단계입니다.
+로컬 PostgreSQL 실행 환경은 [Docker Desktop + PostgreSQL 안내](docs/postgresql-local.md)를 참고하세요. 앱 실행 전에 `uv run alembic upgrade head`로 DB 스키마를 준비하세요.
 
 ## 🚀 Key Features
 

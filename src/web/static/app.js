@@ -1,15 +1,16 @@
 const $ = id => document.getElementById(id);
 let sessionId = localStorage.getItem('div-session');
+let draftRevision = 0, conflict = false, listOffset = 0, switching = false;
 let timer, questionsKey = '', busy = false;
 let draftSession = null, draftDirty = false, draftSaving = false, view = 'edit', latestData = null;
 let saveTimer, savePromise, selectedPassage = null, revisionText = '', revising = false, submitting = false;
 const emptyDocument = $('document').innerHTML;
 const editor = window.createDocumentEditor({onChange:draftChanged, onSelectAI:selectForAI, onSave:() => saveDraft().catch(showError)});
 function draftKey(id = sessionId) { return `div-draft-${id}`; }
-function cachedDraft() {return JSON.stringify({version:2, markdown:editor.markdown(), document:editor.json()});}
+function cachedDraft() {return JSON.stringify({version:3, base_revision:draftRevision, dirty:draftDirty, markdown:editor.markdown(), document:editor.json()});}
 function decodeDraft(value, fallback = '') {
   if (value == null) return {markdown:fallback};
-  try {const data = JSON.parse(value); if(data.version === 2) return data;} catch {}
+  try {const data = JSON.parse(value); if(data.version === 2 || data.version === 3) return data;} catch {}
   return {markdown:value};
 }
 function draftChanged() {
@@ -17,7 +18,7 @@ function draftChanged() {
   try {localStorage.setItem(draftKey(), cachedDraft());} catch {showError('브라우저 임시 저장 공간이 부족합니다. 문서를 다운로드해 주세요.');}
   $('draft-status').textContent = '브라우저 임시 보관 · 서버 저장 전';
   $('draft-count').textContent = `${editor.count().toLocaleString()} / 50,000자`;
-  clearTimeout(saveTimer); saveTimer = setTimeout(() => saveDraft().catch(showError), 1200);
+  clearTimeout(saveTimer); if (!conflict) saveTimer = setTimeout(() => saveDraft().catch(showError), 1200);
 }
 function setView(next) {
   view = next;
@@ -38,15 +39,17 @@ async function saveDraft() {
   clearTimeout(saveTimer);
   if (savePromise) {await savePromise; if (!draftDirty) return;}
   if (!sessionId) return;
+  if (conflict) throw new Error('충돌을 해결하거나 사본으로 저장하세요.');
   draftSaving = true; $('save-draft').disabled = true;
   const markdown = editor.markdown(), document = editor.json(), saved = JSON.stringify(document);
   savePromise = (async () => {try {
-    const data = await api(`/api/sessions/${sessionId}/draft`, {method:'PUT', body:JSON.stringify({markdown, document})});
+    const data = await api(`/api/sessions/${sessionId}/draft`, {method:'PUT', body:JSON.stringify({markdown, document, base_revision:draftRevision})});
     latestData = {...latestData, ...data};
+    draftRevision = data.draft_revision;
     draftDirty = JSON.stringify(editor.json()) !== saved;
     $('draft-status').textContent = draftDirty ? '새 변경사항 · 저장 대기' : '모든 변경사항 저장됨';
     localStorage.setItem(draftKey(), cachedDraft());
-  } catch(error) { $('draft-status').textContent = '저장 실패 · 브라우저에 임시 보관됨'; throw error; }
+  } catch(error) { if (error.status === 409) setConflict(true); $('draft-status').textContent = '저장 실패 · 브라우저에 임시 보관됨'; throw error; }
   finally { draftSaving = false; $('save-draft').disabled = false; savePromise = null; }
   })();
   return savePromise;
@@ -108,12 +111,14 @@ function render(data) {
     draftSession = data.id;
     const local = localStorage.getItem(draftKey(data.id));
     const restored = decodeDraft(local, data.draft || '');
-    editor.load(restored.markdown, local == null ? data.draft_document : restored.document);
-    draftDirty = editor.markdown() !== (data.draft || '') || !!data.draft_document &&
-      JSON.stringify(editor.json()) !== JSON.stringify(data.draft_document);
-    $('draft-status').textContent = draftDirty ? '브라우저 초안 복구됨 · 서버 저장 전' : '초안을 자유롭게 작성하세요.';
+    draftRevision = data.draft_revision;
+    const useLocal = local != null && restored.dirty !== false;
+    editor.load(useLocal ? restored.markdown : data.draft, useLocal ? restored.document : data.draft_document);
+    draftDirty = useLocal && (restored.markdown !== data.draft || JSON.stringify(restored.document) !== JSON.stringify(data.draft_document));
+    setConflict(draftDirty && restored.base_revision !== draftRevision);
+    $('draft-status').textContent = conflict ? '다른 버전의 초안입니다. 복구 방법을 선택하세요.' : draftDirty ? '브라우저 초안 복구됨 · 서버 저장 전' : '모든 변경사항 저장됨';
     $('draft-count').textContent = `${editor.count().toLocaleString()} / 50,000자`;
-    if (draftDirty && editor.count()) {clearTimeout(saveTimer); saveTimer = setTimeout(() => saveDraft().catch(showError),1200);}
+    if (draftDirty && !conflict) {clearTimeout(saveTimer); saveTimer = setTimeout(() => saveDraft().catch(showError),1200);}
     view = 'edit';
   }
   busy = data.status === 'running';
@@ -157,7 +162,8 @@ function render(data) {
 }
 async function poll() {
   clearTimeout(timer);
-  try { const data = await api(`/api/sessions/${sessionId}`); render(data); if (data.status === 'running') timer = setTimeout(poll, 1800); }
+  const requestedId = sessionId;
+  try { const data = await api(`/api/sessions/${requestedId}`); if (requestedId !== sessionId || switching) return; render(data); if (data.status === 'running') timer = setTimeout(poll, 1800); }
   catch (error) { showError(error); if (error.status !== 404) timer = setTimeout(poll, 4000); else {busy = false; $('new').disabled = false;} }
 }
 async function submit(payload) {
@@ -181,7 +187,7 @@ $('questions').addEventListener('submit', event => {
   submit({answers});
 });
 async function newSession(recoveredDraft) {
-  if (revising || submitting) {showError('AI 요청이 끝나면 새 문서를 시작할 수 있습니다.'); return;}
+  if (switching || revising || submitting) {showError('AI 요청이 끝나면 새 문서를 시작할 수 있습니다.'); return;}
   if (savePromise) await savePromise;
   if (draftDirty && draftSession === sessionId) await saveDraft();
   clearTimeout(timer); const data = await api('/api/sessions', {method:'POST'});
@@ -190,6 +196,7 @@ async function newSession(recoveredDraft) {
   editor.load('', null);
   if (typeof recoveredDraft === 'string') localStorage.setItem(draftKey(), recoveredDraft);
   render(data);
+  await loadDocuments(true);
 }
 $('new').onclick = () => newSession().catch(showError);
 async function checkHealth() { $('health').textContent = '연결 확인 중…'; try { const data = await api('/api/health'); $('health').textContent = data.message; } catch(error) { $('health').textContent = error.message; } }
@@ -197,7 +204,56 @@ $('check').onclick = checkHealth;
 async function init() {
   const config = await api('/api/config'); $('model').textContent = `${config.provider} / ${config.model}`;
   checkHealth();
+  await loadDocuments(true);
   if (sessionId) {try {const data = await api(`/api/sessions/${sessionId}`); render(data); if(data.status === 'running') poll(); return;} catch(error) {if(error.status !== 404) throw error;}}
   await newSession(sessionId ? localStorage.getItem(draftKey()) : undefined);
 }
+function setConflict(value) {
+  conflict = value; $('draft-conflict').hidden = !value;
+  if (value) clearTimeout(saveTimer);
+}
+async function openSession(id) {
+  if (switching || revising || submitting) throw new Error('AI 요청이 끝난 뒤 문서를 전환하세요.');
+  if (savePromise) await savePromise;
+  if (draftDirty) await saveDraft();
+  const data = await api(`/api/sessions/${id}`);
+  clearTimeout(timer); sessionId = id; draftSession = null; questionsKey = '';
+  selectedPassage = null; $('selection-panel').hidden = true;
+  localStorage.setItem('div-session', id); render(data);
+  if (data.status === 'running') poll();
+}
+async function loadDocuments(reset = false) {
+  if (reset) {listOffset = 0; $('document-list').replaceChildren();}
+  const rows = await api(`/api/sessions?limit=20&offset=${listOffset}`);
+  for (const row of rows) {
+    const button = document.createElement('button'); button.textContent = row.title;
+    button.onclick = () => openSession(row.id).catch(showError); $('document-list').append(button);
+  }
+  listOffset += rows.length; $('more-documents').hidden = rows.length < 20;
+}
+$('more-documents').onclick = () => loadDocuments().catch(showError);
+$('refresh-documents').onclick = () => loadDocuments(true).catch(showError);
+$('reload-draft').onclick = async () => {
+  if (switching || revising || submitting) return;
+  switching = true;
+  try {
+    const data = await api(`/api/sessions/${sessionId}`);
+    localStorage.setItem(`div-recovery-${sessionId}-${Date.now()}`, cachedDraft());
+    localStorage.removeItem(draftKey()); draftSession = null; render(data);
+  } catch(error) {showError(error);} finally {switching = false;}
+};
+$('copy-draft').onclick = async () => {
+  if (switching || revising || submitting) return;
+  switching = true;
+  const sourceId = sessionId, sourceCache = localStorage.getItem(draftKey());
+  const copiedDocument = JSON.stringify(editor.json());
+  try {
+  const data = await api(`/api/sessions/${sessionId}/copy`, {method:'POST', body:JSON.stringify({markdown:editor.markdown(), document:editor.json(), base_revision:draftRevision})});
+  clearTimeout(timer); clearTimeout(saveTimer);
+  const changed = JSON.stringify(editor.json()) !== copiedDocument;
+  if (changed) localStorage.setItem(draftKey(data.id), JSON.stringify({version:3, base_revision:data.draft_revision, dirty:true, markdown:editor.markdown(), document:editor.json()}));
+  if (localStorage.getItem(draftKey(sourceId)) === sourceCache || localStorage.getItem(draftKey(sourceId)) === cachedDraft()) localStorage.removeItem(draftKey(sourceId));
+  sessionId = data.id; localStorage.setItem('div-session', sessionId); draftSession = null; render(data);
+  await loadDocuments(true);
+} catch(error) {showError(error);} finally {switching = false;} };
 init().catch(showError);
