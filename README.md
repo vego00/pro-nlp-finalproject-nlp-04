@@ -4,6 +4,9 @@
 
 ```powershell
 uv sync
+docker compose up -d --wait
+docker compose exec ollama ollama pull qwen3.5:4b
+uv run alembic upgrade head
 uv run uvicorn web.app:app --app-dir src --host 127.0.0.1 --port 8000
 ```
 
