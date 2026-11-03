@@ -23,3 +23,9 @@ exp/
 data/
 qdrant_data/
 node_modules/
+
+# Obsidian personal workspace state (keep app.json / graph.json shareable)
+.obsidian/workspace.json
+.obsidian/workspace-mobile.json
+.obsidian/plugins/
+.obsidian/community-plugins.json

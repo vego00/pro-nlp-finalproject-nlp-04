@@ -1,0 +1,313 @@
+{
+  "nodes": [
+    {
+      "id": "grp-entry",
+      "type": "group",
+      "x": -920,
+      "y": -560,
+      "width": 1840,
+      "height": 220,
+      "label": "1. 실행 · 운영 엔트리 (scripts/ & compose.yaml)",
+      "color": "5"
+    },
+    {
+      "id": "grp-web",
+      "type": "group",
+      "x": -920,
+      "y": -290,
+      "width": 1840,
+      "height": 310,
+      "label": "2. 웹 대시보드 · 에디터 계층 (src/web/)",
+      "color": "4"
+    },
+    {
+      "id": "grp-storage",
+      "type": "group",
+      "x": -920,
+      "y": 70,
+      "width": 880,
+      "height": 420,
+      "label": "3. PostgreSQL 영속화 · 계정 · 버전 · Job 계층 (src/storage/)",
+      "color": "2"
+    },
+    {
+      "id": "grp-agents",
+      "type": "group",
+      "x": 0,
+      "y": 70,
+      "width": 920,
+      "height": 420,
+      "label": "4. LangGraph 멀티 에이전트 파이프라인 (src/graph/ & src/agents/)",
+      "color": "6"
+    },
+    {
+      "id": "grp-models",
+      "type": "group",
+      "x": -920,
+      "y": 540,
+      "width": 1840,
+      "height": 260,
+      "label": "5. 공통 모델 팩토리 · 설정 · 인프라 (src/models/ & src/config/)",
+      "color": "3"
+    },
+    {
+      "id": "entry-run",
+      "type": "text",
+      "x": -890,
+      "y": -510,
+      "width": 560,
+      "height": 150,
+      "text": "### `scripts/run.sh` & `run-desktop.sh`\n- `.env` / `ADMIN_*` 검증\n- `docker compose up -d --wait`\n- `alembic upgrade head`\n- 단일 프로세스 `uvicorn` 기동 (`--open`)\n- 문서: [[dashboard]]",
+      "color": "5"
+    },
+    {
+      "id": "entry-compose",
+      "type": "text",
+      "x": -280,
+      "y": -510,
+      "width": 560,
+      "height": 150,
+      "text": "### `compose.yaml` (Docker Desktop)\n- `postgres:17-bookworm` (`127.0.0.1:5432`)\n- `ollama/ollama` (`127.0.0.1:11434`)\n- 볼륨: `postgres_data`, `ollama_data`\n- 문서: [[postgresql-local]], [[ollama-docker]]",
+      "color": "5"
+    },
+    {
+      "id": "entry-colab",
+      "type": "text",
+      "x": 330,
+      "y": -510,
+      "width": 560,
+      "height": 150,
+      "text": "### `scripts/colab-tunnel.sh` & Colab 노트북\n- 원격 GPU Ollama SSH 포트포워딩 (`11435`)\n- `notebooks/colab_pipeline_smoke.ipynb`\n- 세부 캔버스: [[langgraph-flow.canvas]]",
+      "color": "5"
+    },
+    {
+      "id": "web-tiptap",
+      "type": "text",
+      "x": -890,
+      "y": -240,
+      "width": 560,
+      "height": 230,
+      "text": "### 브라우저 UI + Tiptap 에디터\n- `src/web/static/index.html`, `app.js`\n- `src/web/editor/editor.js` → `editor.bundle.js`\n- 실시간 임시저장(`localStorage`) + 1.2초 서버 자동저장\n- 선택 문장 AI 다듬기 (`/revise`), 버전·실행 이력 모달\n- 상세: [[01-Web-and-Editor]]",
+      "color": "4"
+    },
+    {
+      "id": "web-app",
+      "type": "text",
+      "x": -280,
+      "y": -240,
+      "width": 580,
+      "height": 230,
+      "text": "### FastAPI 메인 서버 ([[mod__web__app]])\n- `lifespan`: `AUTH_SECRET` 확인, `store.initialize()`, `sync_admin_from_env()`\n- 세션/초안 API: `/api/sessions`, `/draft`, `/copy`, `/messages`, `/revise`\n- 상태 API: `/api/config` (`MODEL_PRESETS`), `/api/health`\n- `run_lock`으로 에이전트 그래프 단일 실행 직렬화",
+      "color": "4"
+    },
+    {
+      "id": "web-auth-hist",
+      "type": "text",
+      "x": 350,
+      "y": -240,
+      "width": 540,
+      "height": 230,
+      "text": "### 인증 · 이력 라우터 ([[mod__web__auth]], [[mod__web__history_api]])\n- `auth.py`: Argon2 비밀번호 로그인, Google OAuth(OIDC+PKCE), HttpOnly 세션 쿠키, CSRF 검증\n- `history_api.py`: 문서 버전 조회/복원 (`/versions`), Job 조회 (`/api/jobs/{id}`)\n- 상세: [[02-Storage-and-Auth]]",
+      "color": "4"
+    },
+    {
+      "id": "store-repo",
+      "type": "text",
+      "x": -890,
+      "y": 120,
+      "width": 410,
+      "height": 180,
+      "text": "### [[mod__storage__repository]]\n- 세션/문서 CRUD 및 소유자 격리 (`owner_id()`)\n- 낙관적 잠금 (`base_revision` 비교 후 `409 Conflict`)\n- `claim()`: `SELECT ... FOR UPDATE` + Job 생성\n- 재시작 시 미완료 `running` 작업을 `interrupted`로 복구",
+      "color": "2"
+    },
+    {
+      "id": "store-history",
+      "type": "text",
+      "x": -450,
+      "y": 120,
+      "width": 380,
+      "height": 180,
+      "text": "### [[mod__storage__history]] & [[mod__storage__accounts]]\n- `append_version()`: 모든 저장/AI 생성/복원 버전 보존\n- `existing_job()`: `Idempotency-Key` + 입력 해시 검증\n- `sync_admin_from_env()`: `.env`의 `ADMIN_EMAIL`/`ADMIN_PASSWORD` 동기화",
+      "color": "2"
+    },
+    {
+      "id": "store-db",
+      "type": "text",
+      "x": -890,
+      "y": 320,
+      "width": 820,
+      "height": 150,
+      "text": "### [[mod__storage__database]] & PostgreSQL 7 테이블\n- [[db__users]], [[db__login_sessions]], [[db__documents]], [[db__document_versions]]\n- [[db__sessions]], [[db__jobs]], [[db__agent_runs]]\n- 세부 ERD 캔버스: [[storage-auth-flow.canvas]]",
+      "color": "2"
+    },
+    {
+      "id": "agent-supervisor",
+      "type": "text",
+      "x": 30,
+      "y": 120,
+      "width": 860,
+      "height": 160,
+      "text": "### [[mod__graph__supervisor_graph]] ([[mod__agents__supervisor]])\n- 엔트리 노드: `supervisor` → `supervisor_router`\n- 라우팅: `ASK_USER` | `RUN_IDEA_STRUCTURING` | `RUN_PLANNING` | `RUN_RESEARCH` | `RUN_EDIT` | `Refresh`\n- 공유 상태: `GlobalState` ([[mod__state__base]])\n- 상세: [[03-LangGraph-Agents]] | 세부 캔버스: [[langgraph-flow.canvas]]",
+      "color": "6"
+    },
+    {
+      "id": "agent-subgraphs",
+      "type": "text",
+      "x": 30,
+      "y": 300,
+      "width": 860,
+      "height": 170,
+      "text": "### 전문 서브그래프 (`src/graph/*_graph.py` & `src/agents/`)\n- **Idea**: [[mod__graph__idea_graph]] → [[mod__agents__idea]]\n- **Plan**: [[mod__graph__plan_graph]] → [[mod__agents__plan_core__pipeline]]\n- **Research**: [[mod__graph__research_graph]] → [[mod__agents__research]]\n- **Visual**: [[mod__graph__visual_graph]] → [[mod__agents__visual_core__generator]]\n- **Edit / Eval**: [[mod__graph__edit_graph]], [[mod__graph__evaluation_graph]]",
+      "color": "6"
+    },
+    {
+      "id": "model-config",
+      "type": "text",
+      "x": -890,
+      "y": 590,
+      "width": 560,
+      "height": 180,
+      "text": "### [[mod__config__config]] (`.env` 우선)\n- `LLM_PROVIDER`, `LLM_MODEL`, `LLM_MINI_MODEL`\n- `MODEL_PRESETS` (`ollama`, `openai`, `gemini`)\n- `DATABASE_URL`, `AUTH_SECRET`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`\n- 상세: [[04-Models-and-Config]]",
+      "color": "3"
+    },
+    {
+      "id": "model-llm",
+      "type": "text",
+      "x": -280,
+      "y": 590,
+      "width": 580,
+      "height": 180,
+      "text": "### [[mod__models__llm]] (`get_llm` / `get_mini_llm`)\n- **Ollama**: `qwen3.5:4b` (기본), `qwen3.8:27b` (`Qwen/Qwen3.8-27B`)\n- **Gemini**: `gemini-2.5-flash`, `gemini-2.5-pro`, `gemini-2.5-flash-lite`\n- **OpenAI / vLLM**: `Qwen/Qwen3.8-27B` 및 OpenAI 모델\n- **Upstage**: Solar 시리즈",
+      "color": "3"
+    },
+    {
+      "id": "model-emb",
+      "type": "text",
+      "x": 350,
+      "y": 590,
+      "width": 540,
+      "height": 180,
+      "text": "### [[mod__models__embeddings]] · 벡터 · 외부 검색\n- FastEmbed CPU (`intfloat/multilingual-e5-small`)\n- Qdrant 로컬 저장소 (`qdrant_data/`)\n- 웹 검색: `ddgs` (기본) / `Tavily`",
+      "color": "3"
+    }
+  ],
+  "edges": [
+    {
+      "id": "e-run-compose",
+      "fromNode": "entry-run",
+      "fromSide": "right",
+      "toNode": "entry-compose",
+      "toSide": "left",
+      "label": "기동/상태 확인",
+      "color": "5"
+    },
+    {
+      "id": "e-run-app",
+      "fromNode": "entry-run",
+      "fromSide": "bottom",
+      "toNode": "web-app",
+      "toSide": "top",
+      "label": "uvicorn 실행",
+      "color": "5"
+    },
+    {
+      "id": "e-ui-app",
+      "fromNode": "web-tiptap",
+      "fromSide": "right",
+      "toNode": "web-app",
+      "toSide": "left",
+      "label": "REST + CSRF + Idempotency-Key",
+      "color": "4"
+    },
+    {
+      "id": "e-app-auth",
+      "fromNode": "web-app",
+      "fromSide": "right",
+      "toNode": "web-auth-hist",
+      "toSide": "left",
+      "label": "인증 미들웨어 · 라우터",
+      "color": "4"
+    },
+    {
+      "id": "e-app-repo",
+      "fromNode": "web-app",
+      "fromSide": "bottom",
+      "toNode": "store-repo",
+      "toSide": "top",
+      "label": "세션·초안·Job 트랜잭션",
+      "color": "2"
+    },
+    {
+      "id": "e-auth-hist",
+      "fromNode": "web-auth-hist",
+      "fromSide": "bottom",
+      "toNode": "store-history",
+      "toSide": "top",
+      "label": "버전·Job·관리자 동기화",
+      "color": "2"
+    },
+    {
+      "id": "e-repo-db",
+      "fromNode": "store-repo",
+      "fromSide": "bottom",
+      "toNode": "store-db",
+      "toSide": "top",
+      "label": "SQLAlchemy Async",
+      "color": "2"
+    },
+    {
+      "id": "e-hist-db",
+      "fromNode": "store-history",
+      "fromSide": "bottom",
+      "toNode": "store-db",
+      "toSide": "top",
+      "label": "SQLAlchemy Async",
+      "color": "2"
+    },
+    {
+      "id": "e-app-sup",
+      "fromNode": "web-app",
+      "fromSide": "bottom",
+      "toNode": "agent-supervisor",
+      "toSide": "top",
+      "label": "invoke_graph(state)",
+      "color": "6"
+    },
+    {
+      "id": "e-sup-sub",
+      "fromNode": "agent-supervisor",
+      "fromSide": "bottom",
+      "toNode": "agent-subgraphs",
+      "toSide": "top",
+      "label": "조건부 라우팅 · 상태 전이",
+      "color": "6"
+    },
+    {
+      "id": "e-sub-llm",
+      "fromNode": "agent-subgraphs",
+      "fromSide": "bottom",
+      "toNode": "model-llm",
+      "toSide": "top",
+      "label": "get_llm() / get_mini_llm()",
+      "color": "3"
+    },
+    {
+      "id": "e-sub-emb",
+      "fromNode": "agent-subgraphs",
+      "fromSide": "bottom",
+      "toNode": "model-emb",
+      "toSide": "top",
+      "label": "RAG · 웹 리서치",
+      "color": "3"
+    },
+    {
+      "id": "e-llm-cfg",
+      "fromNode": "model-llm",
+      "fromSide": "left",
+      "toNode": "model-config",
+      "toSide": "right",
+      "label": "설정 참조",
+      "color": "3"
+    }
+  ]
+}

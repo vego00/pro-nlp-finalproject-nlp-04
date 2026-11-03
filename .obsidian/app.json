@@ -1,0 +1,18 @@
+{
+  "userIgnoreFilters": [
+    ".venv/",
+    "node_modules/",
+    ".git/",
+    "__pycache__/",
+    ".pytest_cache/",
+    ".cache/",
+    ".runtime/",
+    "qdrant_data/",
+    "output/",
+    "logs/",
+    "src/web/static/editor.bundle.js"
+  ],
+  "useMarkdownLinks": false,
+  "newLinkFormat": "shortest",
+  "showUnsupportedFiles": false
+}

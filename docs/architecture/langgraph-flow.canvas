@@ -1,0 +1,207 @@
+{
+  "nodes": [
+    {
+      "id": "lg-grp-state",
+      "type": "group",
+      "x": -860,
+      "y": -480,
+      "width": 1720,
+      "height": 190,
+      "label": "공유 상태 스키마 (src/state/)",
+      "color": "3"
+    },
+    {
+      "id": "lg-grp-core",
+      "type": "group",
+      "x": -860,
+      "y": -250,
+      "width": 1720,
+      "height": 620,
+      "label": "Supervisor 오케스트레이션 및 서브그래프 (src/graph/ & src/agents/)",
+      "color": "6"
+    },
+    {
+      "id": "lg-grp-eval",
+      "type": "group",
+      "x": -860,
+      "y": 410,
+      "width": 1720,
+      "height": 190,
+      "label": "독립 정량 평가 파이프라인 (src/evaluate.py)",
+      "color": "5"
+    },
+    {
+      "id": "lg-state",
+      "type": "text",
+      "x": -830,
+      "y": -435,
+      "width": 1660,
+      "height": 130,
+      "text": "### `GlobalState` ([[mod__state__base]])\n- `messages`: 대화 이력 (`HumanMessage`, `AIMessage`)\n- `idea` ([[mod__state__idea]]): `planning_style`, `rationale`, `toc`, `blueprint`\n- `plan` ([[mod__state__plan]]): `sections`, `final_markdown`, `visual_artifacts`\n- `supervision`: `last_decision`, `request_type` (`text` | `idea_form`), `edit_request` ([[mod__state__edit]])\n- `research` ([[mod__state__research]]) & `visual` ([[mod__state__visual]])",
+      "color": "3"
+    },
+    {
+      "id": "lg-supervisor",
+      "type": "text",
+      "x": -360,
+      "y": -200,
+      "width": 720,
+      "height": 140,
+      "text": "### `supervisor_node` & `supervisor_router`\n- 그래프: [[mod__graph__supervisor_graph]] | 에이전트: [[mod__agents__supervisor]] | 프롬프트: [[mod__prompts__supervisor_prompt]]\n- 사용자 입력과 현재 `idea`/`plan` 진행도를 분석해 다음 실행 단계를 결정\n- `Refresh` 반환 시 대시보드 백그라운드 작업이 자동으로 다음 라운드를 재호출 (`GRAPH_MAX_ROUNDS=30`)",
+      "color": "6"
+    },
+    {
+      "id": "lg-ask-user",
+      "type": "text",
+      "x": -830,
+      "y": -20,
+      "width": 420,
+      "height": 140,
+      "text": "### `ask_user` → `END`\n- 에이전트: [[mod__agents__supervisor]]\n- 추가 정보나 객관식/주관식 폼(`idea_form`)이 필요할 때 사용자 응답 대기\n- 대시보드 오른쪽 질문 카드 렌더링",
+      "color": "4"
+    },
+    {
+      "id": "lg-idea",
+      "type": "text",
+      "x": -360,
+      "y": -20,
+      "width": 440,
+      "height": 150,
+      "text": "### `prepare_idea_structuring` → `idea_phase`\n- 그래프: [[mod__graph__idea_graph]] | 로직: [[mod__agents__idea]] | 프롬프트: [[mod__prompts__idea_prompts]]\n- 4단계 추론: Analyze → Generate → Critique → Evaluate\n- 목차(`toc`) 및 섹션별 청사진(`blueprint`) 확정",
+      "color": "6"
+    },
+    {
+      "id": "lg-plan",
+      "type": "text",
+      "x": 130,
+      "y": -20,
+      "width": 690,
+      "height": 150,
+      "text": "### `plan_phase` (`plan_subgraph`)\n- 그래프: [[mod__graph__plan_graph]] | 코어: [[mod__agents__plan_core__pipeline]], [[mod__agents__plan_core__generator]], [[mod__agents__plan_core__evaluator]]\n- 섹션별 초안 작성 및 품질 검증 (`schemas.py`: [[mod__agents__plan_core__schemas]])\n- 근거 부족 시 Research 요청 신호 발생",
+      "color": "6"
+    },
+    {
+      "id": "lg-research",
+      "type": "text",
+      "x": -830,
+      "y": 180,
+      "width": 520,
+      "height": 160,
+      "text": "### `research_phase` (`run_research_for_plan`)\n- 그래프: [[mod__graph__research_graph]] | 로직: [[mod__agents__research]] | 프롬프트: [[mod__prompts__research_prompts]]\n- `GlobalState` ↔ `ResearchState` 변환 래퍼\n- 쿼리 생성 → DuckDuckGo/Tavily 검색 → Qdrant 임베딩 저장 → 검증된 `evidence` 반환",
+      "color": "5"
+    },
+    {
+      "id": "lg-visual",
+      "type": "text",
+      "x": -270,
+      "y": 180,
+      "width": 520,
+      "height": 160,
+      "text": "### `visual_subgraph`\n- 그래프: [[mod__graph__visual_graph]] | 코어: [[mod__agents__visual_core__router]], [[mod__agents__visual_core__generator]], [[mod__agents__visual_core__validator]]\n- 섹션 내용에 맞는 데이터 차트(Plotly) 및 Mermaid 다이어그램 생성",
+      "color": "5"
+    },
+    {
+      "id": "lg-edit",
+      "type": "text",
+      "x": 290,
+      "y": 180,
+      "width": 530,
+      "height": 160,
+      "text": "### `edit_phase`\n- 그래프: [[mod__graph__edit_graph]] | 코어: [[mod__agents__edit_core__nodes]], [[mod__agents__edit_core__evaluation]]\n- 사용자 피드백 기반 특정 섹션/범위 수정 및 재평가",
+      "color": "2"
+    },
+    {
+      "id": "lg-eval",
+      "type": "text",
+      "x": -830,
+      "y": 455,
+      "width": 1660,
+      "height": 125,
+      "text": "### 정량 평가 그래프 ([[mod__graph__evaluation_graph]] & [[mod__evaluate]])\n- 코어: [[mod__agents__evaluation]], [[mod__agents__evaluation_core__metrics]], [[mod__agents__evaluation_core__schemas]]\n- 생성된 기획서의 완성도·일관성·근거 충실도를 정량 지표로 채점 (문서: [[evaluation_agent]])",
+      "color": "5"
+    }
+  ],
+  "edges": [
+    {
+      "id": "lg-e-state-sup",
+      "fromNode": "lg-state",
+      "fromSide": "bottom",
+      "toNode": "lg-supervisor",
+      "toSide": "top",
+      "label": "GlobalState 전달",
+      "color": "3"
+    },
+    {
+      "id": "lg-e-sup-ask",
+      "fromNode": "lg-supervisor",
+      "fromSide": "bottom",
+      "toNode": "lg-ask-user",
+      "toSide": "top",
+      "label": "ASK_USER",
+      "color": "4"
+    },
+    {
+      "id": "lg-e-sup-idea",
+      "fromNode": "lg-supervisor",
+      "fromSide": "bottom",
+      "toNode": "lg-idea",
+      "toSide": "top",
+      "label": "RUN_IDEA_STRUCTURING",
+      "color": "6"
+    },
+    {
+      "id": "lg-e-sup-plan",
+      "fromNode": "lg-supervisor",
+      "fromSide": "bottom",
+      "toNode": "lg-plan",
+      "toSide": "top",
+      "label": "RUN_PLANNING",
+      "color": "6"
+    },
+    {
+      "id": "lg-e-sup-res",
+      "fromNode": "lg-supervisor",
+      "fromSide": "bottom",
+      "toNode": "lg-research",
+      "toSide": "top",
+      "label": "RUN_RESEARCH",
+      "color": "5"
+    },
+    {
+      "id": "lg-e-sup-edit",
+      "fromNode": "lg-supervisor",
+      "fromSide": "bottom",
+      "toNode": "lg-edit",
+      "toSide": "top",
+      "label": "RUN_EDIT",
+      "color": "2"
+    },
+    {
+      "id": "lg-e-plan-vis",
+      "fromNode": "lg-plan",
+      "fromSide": "bottom",
+      "toNode": "lg-visual",
+      "toSide": "top",
+      "label": "시각 자료 생성",
+      "color": "5"
+    },
+    {
+      "id": "lg-e-idea-sup",
+      "fromNode": "lg-idea",
+      "fromSide": "top",
+      "toNode": "lg-supervisor",
+      "toSide": "bottom",
+      "label": "청사진 반영 후 복귀",
+      "color": "6"
+    },
+    {
+      "id": "lg-e-res-sup",
+      "fromNode": "lg-research",
+      "fromSide": "top",
+      "toNode": "lg-supervisor",
+      "toSide": "bottom",
+      "label": "근거(evidence) 반영 후 복귀",
+      "color": "5"
+    }
+  ]
+}

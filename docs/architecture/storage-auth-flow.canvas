@@ -1,0 +1,160 @@
+{
+  "nodes": [
+    {
+      "id": "st-grp-auth",
+      "type": "group",
+      "x": -900,
+      "y": -420,
+      "width": 860,
+      "height": 360,
+      "label": "1. 계정 · 인증 · 세션 쿠키 (users & login_sessions)",
+      "color": "4"
+    },
+    {
+      "id": "st-grp-doc",
+      "type": "group",
+      "x": 0,
+      "y": -420,
+      "width": 900,
+      "height": 360,
+      "label": "2. 문서 · 서식 초안 · 버전 이력 (documents & document_versions)",
+      "color": "2"
+    },
+    {
+      "id": "st-grp-job",
+      "type": "group",
+      "x": -900,
+      "y": -10,
+      "width": 1800,
+      "height": 340,
+      "label": "3. 에이전트 세션 · 멱등성 Job · 실행 이력 (sessions, jobs, agent_runs)",
+      "color": "6"
+    },
+    {
+      "id": "st-env-admin",
+      "type": "text",
+      "x": -870,
+      "y": -370,
+      "width": 800,
+      "height": 140,
+      "text": "### `.env` 관리자 자동 동기화 ([[mod__storage__accounts]])\n- `ADMIN_EMAIL` + `ADMIN_PASSWORD` (4자 이상)\n- 서버 시작 시 `sync_admin_from_env()`가 [[db__users]] 테이블에 관리자 생성 또는 비밀번호 회전\n- 최초 생성 시 기존 `local` 소유 문서/Job을 관리자에게 자동 인계(`adopt_local`)",
+      "color": "4"
+    },
+    {
+      "id": "st-users-table",
+      "type": "text",
+      "x": -870,
+      "y": -210,
+      "width": 800,
+      "height": 130,
+      "text": "### [[db__users]] & [[db__login_sessions]] 테이블\n- `users`: `id (PK)`, `key (UNIQUE)`, `email (UNIQUE)`, `password_hash (Argon2)`, `google_sub (UNIQUE)`, `is_admin`, `active`, `allow_google`\n- `login_sessions`: `token_hash (PK, SHA-256)`, `user_id (FK -> users.id)`, `csrf`, `expires_at` (12시간)\n- 인증 라우터: [[mod__web__auth]]",
+      "color": "4"
+    },
+    {
+      "id": "st-documents",
+      "type": "text",
+      "x": 30,
+      "y": -370,
+      "width": 840,
+      "height": 145,
+      "text": "### [[db__documents]] 테이블 (현재 최신 문서 상태)\n- `id (PK)`, `owner_id (FK -> users.id)`, `title`\n- `draft` (Markdown), `draft_document` (Tiptap JSONB), `draft_revision` (낙관적 잠금 카운터)\n- `generated_markdown` (최신 AI 기획서 결과)\n- 저장소 모듈: [[mod__storage__repository]]",
+      "color": "2"
+    },
+    {
+      "id": "st-versions",
+      "type": "text",
+      "x": 30,
+      "y": -205,
+      "width": 840,
+      "height": 125,
+      "text": "### [[db__document_versions]] 테이블 (불변 버전 이력)\n- `id (PK)`, `document_id (FK -> documents.id)`, `kind` (`draft` | `generated`), `revision`\n- `markdown`, `document_json`, `source` (`create` | `save` | `copy` | `restore` | `ai`)\n- 이력 모듈: [[mod__storage__history]], [[mod__web__history_api]]",
+      "color": "2"
+    },
+    {
+      "id": "st-sessions",
+      "type": "text",
+      "x": -870,
+      "y": 45,
+      "width": 560,
+      "height": 250,
+      "text": "### [[db__sessions]] 테이블 (LangGraph 상태 스냅샷)\n- `id (PK)`, `document_id (UNIQUE FK -> documents.id)`\n- `status` (`ready` | `running` | `error`), `stage`, `error`, `run_token`\n- `state (JSONB)`: 직렬화된 `GlobalState` (`messages`, `idea`, `plan`, `supervision`)",
+      "color": "6"
+    },
+    {
+      "id": "st-jobs",
+      "type": "text",
+      "x": -280,
+      "y": 45,
+      "width": 620,
+      "height": 250,
+      "text": "### [[db__jobs]] 테이블 (요청 멱등성 & 비동기 작업 추적)\n- `id (PK)`, `owner_id (FK -> users.id)`, `session_id (FK -> sessions.id)`\n- `request_key` (`Idempotency-Key`), `input_hash (SHA-256)`, `kind` (`planning` | `revision`)\n- `UNIQUE(owner_id, request_key)`: 동일 키+동일 입력은 기존 Job 반환, 다른 입력은 `409 Conflict`\n- `base_revision` 기록: AI 실행 중 사용자가 초안을 편집해도 서로 덮어쓰지 않음",
+      "color": "6"
+    },
+    {
+      "id": "st-agent-runs",
+      "type": "text",
+      "x": 370,
+      "y": 45,
+      "width": 500,
+      "height": 250,
+      "text": "### [[db__agent_runs]] 테이블 (실행 감사 로그)\n- `id (PK)`, `session_id (FK -> sessions.id)`, `stage`\n- `status` (`running` | `completed` | `error` | `interrupted`)\n- 서버 강제 종료 후 재시작 시 `store.initialize()`가 미완료 작업을 `interrupted`로 일괄 정리",
+      "color": "6"
+    }
+  ],
+  "edges": [
+    {
+      "id": "st-e-admin-users",
+      "fromNode": "st-env-admin",
+      "fromSide": "bottom",
+      "toNode": "st-users-table",
+      "toSide": "top",
+      "label": "생성 / 비밀번호 회전",
+      "color": "4"
+    },
+    {
+      "id": "st-e-users-doc",
+      "fromNode": "st-users-table",
+      "fromSide": "right",
+      "toNode": "st-documents",
+      "toSide": "left",
+      "label": "owner_id (1:N)",
+      "color": "4"
+    },
+    {
+      "id": "st-e-doc-ver",
+      "fromNode": "st-documents",
+      "fromSide": "bottom",
+      "toNode": "st-versions",
+      "toSide": "top",
+      "label": "document_id (1:N)",
+      "color": "2"
+    },
+    {
+      "id": "st-e-doc-sess",
+      "fromNode": "st-documents",
+      "fromSide": "bottom",
+      "toNode": "st-sessions",
+      "toSide": "top",
+      "label": "document_id (1:1)",
+      "color": "2"
+    },
+    {
+      "id": "st-e-sess-jobs",
+      "fromNode": "st-sessions",
+      "fromSide": "right",
+      "toNode": "st-jobs",
+      "toSide": "left",
+      "label": "session_id (1:N)",
+      "color": "6"
+    },
+    {
+      "id": "st-e-jobs-runs",
+      "fromNode": "st-jobs",
+      "fromSide": "right",
+      "toNode": "st-agent-runs",
+      "toSide": "left",
+      "label": "실행 기록",
+      "color": "6"
+    }
+  ]
+}
