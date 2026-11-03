@@ -1,12 +1,13 @@
 const $ = id => document.getElementById(id);
-let sessionId = localStorage.getItem('div-session');
+let sessionId = null, accountId = null, csrfToken = '', sessionStorageKey = '';
+let pendingMessage = null, pendingRevision = null;
 let draftRevision = 0, conflict = false, listOffset = 0, switching = false;
 let timer, questionsKey = '', busy = false;
 let draftSession = null, draftDirty = false, draftSaving = false, view = 'edit', latestData = null;
 let saveTimer, savePromise, selectedPassage = null, revisionText = '', revising = false, submitting = false;
 const emptyDocument = $('document').innerHTML;
 const editor = window.createDocumentEditor({onChange:draftChanged, onSelectAI:selectForAI, onSave:() => saveDraft().catch(showError)});
-function draftKey(id = sessionId) { return `div-draft-${id}`; }
+function draftKey(id = sessionId) { return `div-draft-${accountId}-${id}`; }
 function cachedDraft() {return JSON.stringify({version:3, base_revision:draftRevision, dirty:draftDirty, markdown:editor.markdown(), document:editor.json()});}
 function decodeDraft(value, fallback = '') {
   if (value == null) return {markdown:fallback};
@@ -81,10 +82,13 @@ $('revise-form').onsubmit = async event => {
   revising = true; $('request-revision').disabled = true; $('close-selection').disabled = true;
   $('revision-result').hidden = true; $('revision-status').textContent = '수정안을 작성하고 있습니다… 문서는 계속 편집할 수 있습니다.';
   try {
-    const data = await api(`/api/sessions/${sessionId}/revise`, {method:'POST', body:JSON.stringify({selection:selectedPassage.text, instruction:$('revise-instruction').value, context:editor.text().slice(0,12000)})});
+    const encoded = JSON.stringify({selection:selectedPassage.text, instruction:$('revise-instruction').value, context:editor.text().slice(0,12000)});
+    if (!pendingRevision || pendingRevision.body !== encoded || pendingRevision.sid !== sessionId) pendingRevision = {body:encoded,sid:sessionId,key:crypto.randomUUID()};
+    const data = await api(`/api/sessions/${sessionId}/revise`, {method:'POST', headers:{'Idempotency-Key':pendingRevision.key}, body:encoded});
+    pendingRevision = null;
     revisionText = data.text; $('revision-preview').innerHTML = data.html;
     $('revision-result').hidden = false; $('revision-status').textContent = '수정안을 확인하세요. 반영 전에는 문서가 바뀌지 않습니다.';
-  } catch(error) {$('revision-status').textContent = error.message;}
+  } catch(error) {if (error.status === 502) pendingRevision = null; $('revision-status').textContent = error.message;}
   finally {revising = false; $('request-revision').disabled = false; $('close-selection').disabled = false;}
 };
 $('apply-revision').onclick = () => {
@@ -96,11 +100,11 @@ $('apply-revision').onclick = () => {
   selectedPassage = null; setView('edit');
 };
 async function api(path, options = {}) {
-  const response = await fetch(path, {...options, headers: {'Content-Type': 'application/json'}});
+  const response = await fetch(path, {...options, headers: {'Content-Type': 'application/json', 'X-Requested-With':'DIV', 'X-CSRF-Token':csrfToken, ...options.headers}});
   if (!response.ok) {
     let data; try { data = await response.json(); } catch { data = {}; }
     const error = new Error(typeof data.detail === 'string' ? data.detail : `요청 실패 (${response.status})`);
-    error.status = response.status; throw error;
+    error.status = response.status; if (response.status === 401) showLogin(); throw error;
   }
   return response.json();
 }
@@ -173,7 +177,9 @@ async function submit(payload) {
   try {
     if (draftDirty) await saveDraft();
     payload.include_draft = !payload.answers && $('include-draft').checked;
-    await api(`/api/sessions/${sessionId}/messages`, {method:'POST', body:JSON.stringify(payload)}); $('prompt').value = ''; await poll();
+    const encoded = JSON.stringify(payload);
+    if (!pendingMessage || pendingMessage.body !== encoded || pendingMessage.sid !== sessionId) pendingMessage = {body:encoded,sid:sessionId,key:crypto.randomUUID()};
+    await api(`/api/sessions/${sessionId}/messages`, {method:'POST', headers:{'Idempotency-Key':pendingMessage.key}, body:encoded}); pendingMessage = null; $('prompt').value = ''; await poll();
   }
   catch (error) { showError(error); $('send').disabled = busy; }
   finally {submitting = false;}
@@ -191,7 +197,7 @@ async function newSession(recoveredDraft) {
   if (savePromise) await savePromise;
   if (draftDirty && draftSession === sessionId) await saveDraft();
   clearTimeout(timer); const data = await api('/api/sessions', {method:'POST'});
-  sessionId = data.id; localStorage.setItem('div-session',sessionId);
+  sessionId = data.id; localStorage.setItem(sessionStorageKey,sessionId);
   $('selection-panel').hidden = true; selectedPassage = null; draftSession = null;
   editor.load('', null);
   if (typeof recoveredDraft === 'string') localStorage.setItem(draftKey(), recoveredDraft);
@@ -202,6 +208,11 @@ $('new').onclick = () => newSession().catch(showError);
 async function checkHealth() { $('health').textContent = '연결 확인 중…'; try { const data = await api('/api/health'); $('health').textContent = data.message; } catch(error) { $('health').textContent = error.message; } }
 $('check').onclick = checkHealth;
 async function init() {
+  let user;
+  try { user = await api('/api/auth/me'); } catch(error) { if (error.status === 401) { await showLogin(); return; } throw error; }
+  accountId = user.id; csrfToken = user.csrf; sessionStorageKey = 'div-session-' + accountId;
+  sessionId = localStorage.getItem(sessionStorageKey);
+  document.body.classList.remove('auth-locked'); $('login-panel').hidden = true; $('account-email').textContent = user.email;
   const config = await api('/api/config'); $('model').textContent = `${config.provider} / ${config.model}`;
   checkHealth();
   await loadDocuments(true);
@@ -219,7 +230,7 @@ async function openSession(id) {
   const data = await api(`/api/sessions/${id}`);
   clearTimeout(timer); sessionId = id; draftSession = null; questionsKey = '';
   selectedPassage = null; $('selection-panel').hidden = true;
-  localStorage.setItem('div-session', id); render(data);
+  localStorage.setItem(sessionStorageKey, id); render(data);
   if (data.status === 'running') poll();
 }
 async function loadDocuments(reset = false) {
@@ -238,7 +249,7 @@ $('reload-draft').onclick = async () => {
   switching = true;
   try {
     const data = await api(`/api/sessions/${sessionId}`);
-    localStorage.setItem(`div-recovery-${sessionId}-${Date.now()}`, cachedDraft());
+    localStorage.setItem(`div-recovery-${accountId}-${sessionId}-${Date.now()}`, cachedDraft());
     localStorage.removeItem(draftKey()); draftSession = null; render(data);
   } catch(error) {showError(error);} finally {switching = false;}
 };
@@ -253,7 +264,50 @@ $('copy-draft').onclick = async () => {
   const changed = JSON.stringify(editor.json()) !== copiedDocument;
   if (changed) localStorage.setItem(draftKey(data.id), JSON.stringify({version:3, base_revision:data.draft_revision, dirty:true, markdown:editor.markdown(), document:editor.json()}));
   if (localStorage.getItem(draftKey(sourceId)) === sourceCache || localStorage.getItem(draftKey(sourceId)) === cachedDraft()) localStorage.removeItem(draftKey(sourceId));
-  sessionId = data.id; localStorage.setItem('div-session', sessionId); draftSession = null; render(data);
+  sessionId = data.id; localStorage.setItem(sessionStorageKey, sessionId); draftSession = null; render(data);
   await loadDocuments(true);
 } catch(error) {showError(error);} finally {switching = false;} };
+async function showLogin() {
+  document.body.classList.add('auth-locked'); $('login-panel').hidden = false;
+  clearTimeout(timer); clearTimeout(saveTimer);
+  const response = await fetch('/api/auth/options');
+  if (response.ok) $('google-login').hidden = !(await response.json()).google;
+}
+$('login-form').onsubmit = async event => {
+  event.preventDefault();
+  try {
+    await api('/api/auth/login', {method:'POST',body:JSON.stringify({email:$('login-email').value,password:$('login-password').value})});
+    location.reload();
+  } catch(error) {$('login-error').textContent = error.message;}
+};
+$('logout').onclick = async () => {
+  try {if (draftDirty) await saveDraft(); await api('/api/auth/logout',{method:'POST'}); location.reload();}
+  catch(error) {showError(error);}
+};
+$('close-history').onclick = () => $('history-dialog').close();
+$('show-history').onclick = async () => {
+  try {
+    const sid = sessionId;
+    const versions = await api(`/api/sessions/${sid}/versions`);
+    $('version-list').replaceChildren();
+    for (const version of versions) {
+      const row = document.createElement('div');
+      const preview = document.createElement('button'); preview.textContent = `${version.kind === 'draft' ? '초안' : 'AI 결과'} #${version.revision} · ${new Date(version.created_at).toLocaleString()}`;
+      preview.onclick = async () => {try {const data = await api(`/api/sessions/${sid}/versions/${version.id}`); $('version-preview').textContent = data.markdown;} catch(error) {showError(error);} };
+      const restore = document.createElement('button'); restore.textContent = '이 버전을 초안으로 복원';
+      restore.onclick = async () => {try {
+        if (sid !== sessionId) throw new Error('문서가 변경됐습니다.');
+        if (draftDirty) await saveDraft();
+        const data = await api(`/api/sessions/${sid}/versions/${version.id}/restore`,{method:'POST',body:JSON.stringify({base_revision:draftRevision})});
+        localStorage.removeItem(draftKey()); draftSession = null; render(data); $('history-dialog').close();
+      } catch(error) {if(error.status===409) setConflict(true); showError(error);} };
+      row.append(preview,restore); $('version-list').append(row);
+    }
+    $('version-preview').textContent = '';
+    const jobs = await api(`/api/sessions/${sid}/jobs`);
+    $('job-list').replaceChildren();
+    for (const job of jobs) {const row = document.createElement('p'); row.textContent = `${job.kind} · ${job.status} · ${new Date(job.created_at).toLocaleString()} ${job.error || ''}`; $('job-list').append(row);}
+    $('history-dialog').showModal();
+  } catch(error) {showError(error);}
+};
 init().catch(showError);

@@ -6,6 +6,8 @@ import subprocess
 import sys
 import tempfile
 import time
+import secrets
+from argon2 import PasswordHasher
 
 import httpx
 import psycopg
@@ -22,7 +24,12 @@ def main():
         sock.bind(('127.0.0.1', 0))
         port = sock.getsockname()[1]
     base = f'http://127.0.0.1:{port}'
-    env = dict(os.environ, DATABASE_URL=url, PYTHONPATH='src', DASHBOARD_URL=base)
+    email, password = 'restart-' + secrets.token_hex(6) + '@example.com', secrets.token_urlsafe(24)
+    uid = secrets.token_hex(16)
+    with psycopg.connect(connection_url) as connection:
+        connection.execute('INSERT INTO users(id,key,email,password_hash) VALUES (%s,%s,%s,%s)', (uid,uid,email,PasswordHasher().hash(password)))
+    env = dict(os.environ, DATABASE_URL=url, PYTHONPATH='src', DASHBOARD_URL=base, APP_BASE_URL=base, TEST_LOGIN_EMAIL=email, TEST_LOGIN_PASSWORD=password)
+    api = httpx.Client(headers={'X-Requested-With':'DIV'})
 
     with tempfile.TemporaryFile(mode='w+') as log:
         def start():
@@ -34,7 +41,7 @@ def main():
                 if process.poll() is not None:
                     break
                 try:
-                    if httpx.get(base + '/api/config', timeout=1).status_code == 200:
+                    if httpx.get(base + '/api/auth/options', timeout=1).status_code == 200:
                         return process
                 except httpx.HTTPError:
                     pass
@@ -46,10 +53,12 @@ def main():
 
         process = start()
         try:
-            sid = httpx.post(base + '/api/sessions').json()['id']
+            assert api.post(base + '/api/auth/login',json={'email':email,'password':password}).status_code == 200
+            api.headers['X-CSRF-Token'] = api.get(base + '/api/auth/me').json()['csrf']
+            sid = api.post(base + '/api/sessions').json()['id']
             endpoint = f'{base}/api/sessions/{sid}'
             draft = {'type': 'doc', 'content': [{'type': 'paragraph', 'content': [{'type': 'text', 'text': 'restart-proof'}]}]}
-            assert httpx.put(endpoint + '/draft', json={'markdown': 'restart-proof', 'document': draft, 'base_revision': 0}).status_code == 200
+            assert api.put(endpoint + '/draft', json={'markdown': 'restart-proof', 'document': draft, 'base_revision': 0}).status_code == 200
             # Seed a completed graph boundary; no paid/local model is required.
             with psycopg.connect(connection_url) as connection:
                 state = connection.execute('SELECT state FROM sessions WHERE id=%s', (sid,)).fetchone()[0]
@@ -64,23 +73,24 @@ def main():
             process.kill()
             process.wait()
             process = start()
-            result = httpx.get(endpoint).json()
+            result = api.get(endpoint).json()
             assert result['draft'] == 'restart-proof' and result['draft_document'] == draft
             assert result['messages'][-1]['content'] == 'saved answer'
             assert result['questions'][0]['current_section'] == 'audience'
-            assert httpx.get(endpoint + '/download').text == '# persisted AI result'
+            assert api.get(endpoint + '/download').text == '# persisted AI result'
             with psycopg.connect(connection_url) as connection:
                 connection.execute("UPDATE sessions SET status='running', run_token='interrupted' WHERE id=%s", (sid,))
             process.kill()
             process.wait()
             process = start()
-            result = httpx.get(endpoint).json()
+            result = api.get(endpoint).json()
             assert result['status'] == 'error' and result['draft'] == 'restart-proof'
             print('Process restart, messages, rich draft, AI result, interrupted run recovery: OK', flush=True)
             subprocess.run([sys.executable, str(Path(__file__).with_name('dashboard_browser_smoke.py'))], env=env, check=True)
         finally:
             process.terminate()
             process.wait(timeout=15)
+            api.close()
 
 
 if __name__ == '__main__':

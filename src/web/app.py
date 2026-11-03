@@ -5,11 +5,16 @@ from copy import deepcopy
 import logging
 import json
 from pathlib import Path
-from uuid import uuid4
+import secrets
+from starlette.middleware.sessions import SessionMiddleware
+from web import auth
+from web.history_api import router as history_router
+from storage import history
+from storage import accounts
 
 import bleach
 import httpx
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request, Header
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 from storage import repository as store
@@ -31,7 +36,11 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app):
+    if len(settings.AUTH_SECRET) < 32:
+        raise RuntimeError("AUTH_SECRET을 32자 이상으로 설정하세요.")
     await store.initialize()
+    if await accounts.sync_admin_from_env(settings.ADMIN_EMAIL, settings.ADMIN_PASSWORD) == 'skipped':
+        logger.warning('ADMIN_EMAIL/ADMIN_PASSWORD가 없어 관리자 계정 동기화를 건너뜁니다.')
     yield
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
@@ -40,6 +49,32 @@ async def lifespan(app):
 
 app = FastAPI(title="DIV · Vibe Planner", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
+
+app.add_middleware(SessionMiddleware, secret_key=settings.AUTH_SECRET or 'not-configured', session_cookie='div_oauth', same_site='lax', https_only=settings.AUTH_COOKIE_SECURE, max_age=600)
+app.include_router(auth.router)
+app.include_router(history_router)
+
+@app.middleware('http')
+async def authenticate(request: Request, call_next):
+    if not request.url.path.startswith('/api/') or request.url.path.startswith('/api/auth/'):
+        return await call_next(request)
+    try:
+        user = await auth.identify(request)
+        if not user:
+            return JSONResponse(status_code=401, content={'detail':'로그인이 필요합니다.'})
+        if request.method not in {'GET','HEAD','OPTIONS'}:
+            auth.check_origin(request)
+            if not secrets.compare_digest(request.headers.get('x-csrf-token',''), user['csrf']):
+                raise HTTPException(403, '요청을 확인할 수 없습니다.')
+        token = auth.current_user.set(user)
+        try:
+            return await call_next(request)
+        finally:
+            auth.current_user.reset(token)
+    except HTTPException as exc:
+        return JSONResponse(status_code=exc.status_code, content={'detail':exc.detail})
+    except SQLAlchemyError:
+        return JSONResponse(status_code=503, content={'detail':'저장소에 연결할 수 없습니다.'})
 
 
 def initial_state():
@@ -146,7 +181,8 @@ def index():
 @app.get("/api/config")
 def config():
     return {"provider": settings.LLM_PROVIDER, "model": settings.LLM_MODEL,
-            "mini_model": settings.LLM_MINI_MODEL, "search_provider": settings.SEARCH_PROVIDER}
+            "mini_model": settings.LLM_MINI_MODEL, "search_provider": settings.SEARCH_PROVIDER,
+            "model_presets": {k: list(v) for k, v in settings.MODEL_PRESETS.items()}}
 
 
 @app.get("/api/health")
@@ -163,7 +199,12 @@ async def health():
                     "모델 설치 필요: " + ", ".join(missing), "models": models}
         except (httpx.HTTPError, ValueError, KeyError) as exc:
             return {"ready": False, "message": "Ollama에 연결할 수 없습니다. Ollama 실행 및 주소를 확인하세요."}
-    key = {"openai": settings.OPENAI_API_KEY, "upstage": settings.UPSTAGE_API_KEY}.get(settings.LLM_PROVIDER)
+    provider = settings.PROVIDER_ALIASES.get(settings.LLM_PROVIDER, settings.LLM_PROVIDER)
+    key = {
+        "openai": settings.OPENAI_API_KEY,
+        "gemini": settings.GEMINI_API_KEY,
+        "upstage": settings.UPSTAGE_API_KEY,
+    }.get(provider)
     return {"ready": bool(key and settings.LLM_MODEL),
             "message": "API 설정 확인됨 (연결은 요청 시 확인)" if key else "제공자와 API 키를 확인하세요."}
 
@@ -240,23 +281,32 @@ def revise_passage(request: Revision):
 
 
 @app.post("/api/sessions/{session_id}/revise")
-async def revise(session_id: str, request: Revision):
+async def revise(session_id: str, request: Revision, idempotency_key: str = Header(min_length=8, max_length=128)):
+    prior = await history.existing_job(auth.owner_id(), idempotency_key, session_id, "revision", request.model_dump())
+    if prior:
+        if prior["status"] == "succeeded":
+            return prior["result"]
+        raise HTTPException(409, "이 요청은 처리 중이거나 종료됐습니다. 실행 기록을 확인하세요.")
     session = await find_session(session_id)
     if not request.selection.strip() or not request.instruction.strip():
         raise HTTPException(422, "수정할 문장과 요청을 입력하세요.")
     if session.get("revising") or session["status"] == "running":
         raise HTTPException(409, "진행 중인 AI 요청이 끝난 후 다시 요청하세요.")
-    token = await store.claim(session_id, session["state"])
+    token, created = await store.claim(session_id, session["state"], idempotency_key, "revision", request.model_dump())
+    if not created:
+        raise HTTPException(409, "이미 접수한 요청입니다.")
     session["revising"] = True
     try:
         async with run_lock:
             result = await asyncio.to_thread(revise_passage, request)
-        return {"text": result, "html": render_markdown(result)}
+        result = {"text": result, "html": render_markdown(result)}
+        await store.checkpoint(session, token, session["markdown"], "ready", job_result=result)
+        return result
     except Exception:
         logger.exception("Passage revision failed")
+        await store.checkpoint(session, token, session["markdown"], "error", "수정안 생성 실패", job_result={})
         raise HTTPException(502, "수정안을 생성하지 못했습니다. 모델 연결을 확인하고 다시 시도하세요. 원문은 유지됩니다.")
-    finally:
-        await store.checkpoint(session, token, session["markdown"], "ready")
+
 
 
 @app.get("/api/sessions/{session_id}/draft/download")
@@ -267,8 +317,15 @@ async def download_draft(session_id: str):
 
 
 @app.post("/api/sessions/{session_id}/messages", status_code=202)
-async def send_message(session_id: str, message: Message):
+async def send_message(session_id: str, message: Message, idempotency_key: str = Header(min_length=8, max_length=128)):
+    prior = await history.existing_job(auth.owner_id(), idempotency_key, session_id, "planning", message.model_dump())
+    if prior:
+        return {"status": prior["status"], "job_id": prior["id"]}
     session = await find_session(session_id)
+    # A concurrent request may have committed its Job after our first lookup.
+    prior = await history.existing_job(auth.owner_id(), idempotency_key, session_id, "planning", message.model_dump())
+    if prior:
+        return {"status": prior["status"], "job_id": prior["id"]}
     if session["status"] == "running" or session.get("revising"):
         raise HTTPException(409, "현재 요청을 처리 중입니다.")
     wants_form = session["state"]["supervision"].get("request_type") == "idea_form"
@@ -284,12 +341,15 @@ async def send_message(session_id: str, message: Message):
         if message.include_draft and session.get("draft", "").strip():
             response = (f"사용자가 작성한 기획서 초안입니다. 아래 초안을 참고하여 요청을 처리하세요.\n"
                         f"<user_draft>\n{session['draft']}\n</user_draft>\n\n사용자 요청: {response}")
-    session["run_token"] = await store.claim(session_id, session["state"])
+    token, created = await store.claim(session_id, session["state"], idempotency_key, "planning", message.model_dump(), base_revision=session["draft_revision"], resolved_input=response)
+    if not created:
+        return {"status": "accepted", "job_id": token}
+    session["run_token"] = token
     session.update(status="running", error=None)
     task = asyncio.create_task(run(session, response))
     tasks.add(task)
     task.add_done_callback(tasks.discard)
-    return {"status": "running"}
+    return {"status": "running", "job_id": token}
 
 
 @app.get("/api/sessions/{session_id}/download")

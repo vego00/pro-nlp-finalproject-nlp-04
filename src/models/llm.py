@@ -1,4 +1,4 @@
-﻿"""One model factory for every agent; no network calls at import time."""
+"""One model factory for every agent; no network calls at import time."""
 from config import config as settings
 
 
@@ -8,7 +8,7 @@ def get_llm(model=None, temperature=0.7, max_tokens=None, reasoning_effort=None,
     if not model:
         raise ValueError("src/config/config.py 또는 .env에 LLM_MODEL을 지정하세요.")
     tokens = min(max_tokens or settings.LLM_MAX_TOKENS, settings.LLM_MAX_TOKENS)
-    provider = settings.LLM_PROVIDER
+    provider = settings.PROVIDER_ALIASES.get(settings.LLM_PROVIDER, settings.LLM_PROVIDER)
     if provider == "ollama":
         from langchain_ollama import ChatOllama
         options = dict(model=model, base_url=settings.OLLAMA_BASE_URL,
@@ -18,6 +18,16 @@ def get_llm(model=None, temperature=0.7, max_tokens=None, reasoning_effort=None,
         if json_mode:
             options["format"] = "json"
         return ChatOllama(**options)
+    if provider == "gemini":
+        from langchain_google_genai import ChatGoogleGenerativeAI
+        if not settings.GEMINI_API_KEY:
+            raise ValueError("Gemini 사용 시 .env에 GEMINI_API_KEY 또는 GOOGLE_API_KEY가 필요합니다.")
+        options = dict(model=model, google_api_key=settings.GEMINI_API_KEY,
+                       temperature=temperature, max_output_tokens=tokens,
+                       timeout=settings.LLM_TIMEOUT, max_retries=1)
+        if json_mode:
+            options["response_mime_type"] = "application/json"
+        return ChatGoogleGenerativeAI(**options)
     if provider == "openai":
         from langchain_openai import ChatOpenAI
         if not settings.OPENAI_API_KEY:

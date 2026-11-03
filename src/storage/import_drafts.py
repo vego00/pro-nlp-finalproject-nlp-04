@@ -7,15 +7,21 @@ from pathlib import Path
 from fastapi import HTTPException
 from storage import repository
 from storage.database import get_engine
+from sqlalchemy import text
+from web.auth import current_user
 
 async def main():
     from web.app import Draft, initial_state
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('path', type=Path)
     parser.add_argument('--dry-run', action='store_true')
+    parser.add_argument('--owner-email', required=True)
     args = parser.parse_args()
-    if not args.dry_run:
-        await repository.ensure_owner()
+    async with get_engine().connect() as c:
+        user = (await c.execute(text('SELECT id FROM users WHERE email=:email AND active'), {'email':args.owner_email.strip().lower()})).mappings().first()
+    if not user:
+        raise ValueError('등록된 소유자 이메일이 필요합니다.')
+    current_user.set(dict(user))
     paths = sorted(args.path.glob('*')) if args.path.is_dir() else [args.path]
     stems = sorted({p.with_suffix('') for p in paths if p.suffix in {'.md', '.json'}})
     for stem in stems:

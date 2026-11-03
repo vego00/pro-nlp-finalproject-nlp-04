@@ -5,6 +5,9 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from langchain_core.messages import messages_to_dict, messages_from_dict
 from fastapi import HTTPException
 from storage.database import get_engine, users, documents as d, sessions as s
+from web.auth import owner_id
+from storage import history
+import json
 
 OWNER = '00000000-0000-0000-0000-000000000001'
 
@@ -29,23 +32,26 @@ async def ensure_owner():
 async def initialize():
     async with get_engine().begin() as c:
         version = (await c.execute(text('SELECT version_num FROM alembic_version'))).scalar_one()
-        if version != '001_storage':
+        if version != '002_history_auth':
             raise RuntimeError('alembic upgrade head 실행이 필요합니다.')
         await c.execute(pg_insert(users).values(id=OWNER, key='local').on_conflict_do_nothing())
+        await c.execute(text("UPDATE jobs SET status='interrupted',error='서버 재시작으로 중단되었습니다.',finished_at=now() WHERE status='running'"))
+        await c.execute(text("UPDATE agent_runs SET status='interrupted',error='서버 재시작으로 중단되었습니다.',finished_at=now() WHERE status='running'"))
         await c.execute(update(s).where(s.c.status == 'running').values(status='error', error='서버 재시작으로 작업이 중단되었습니다. 다시 요청하세요.', run_token=None))
 
 
 async def create(state, markdown='', document=None, session_id=None):
     sid, did = session_id or uuid4().hex, str(uuid4())
     async with get_engine().begin() as c:
-        await c.execute(insert(d).values(id=did, owner_id=OWNER, title=title(markdown), draft=markdown, draft_document=document, draft_revision=0))
+        await c.execute(insert(d).values(id=did, owner_id=owner_id(), title=title(markdown), draft=markdown, draft_document=document, draft_revision=0))
+        await history.append_version(c, did, 'draft', markdown, document, 0, 'create')
         await c.execute(insert(s).values(id=sid, document_id=did, state=encode(state), state_schema_version=1, markdown='', status='ready'))
     return await get(sid)
 
 
 async def get(sid):
     async with get_engine().connect() as c:
-        row = (await c.execute(select(s, d.c.title, d.c.draft, d.c.draft_document, d.c.draft_revision, d.c.updated_at).join(d).where(s.c.id == sid, d.c.owner_id == OWNER))).mappings().first()
+        row = (await c.execute(select(s, d.c.title, d.c.draft, d.c.draft_document, d.c.draft_revision, d.c.updated_at).join(d).where(s.c.id == sid, d.c.owner_id == owner_id()))).mappings().first()
     if row is None:
         raise HTTPException(404, '세션이 없습니다. 새 문서를 시작하세요.')
     result = dict(row)
@@ -57,34 +63,56 @@ async def get(sid):
 
 async def listing(limit, offset):
     async with get_engine().connect() as c:
-        rows = await c.execute(select(s.c.id, d.c.title, s.c.status, d.c.updated_at).join(d).where(d.c.owner_id == OWNER).order_by(d.c.updated_at.desc(), s.c.id).limit(limit).offset(offset))
+        rows = await c.execute(select(s.c.id, d.c.title, s.c.status, d.c.updated_at).join(d).where(d.c.owner_id == owner_id()).order_by(d.c.updated_at.desc(), s.c.id).limit(limit).offset(offset))
         return [dict(row) for row in rows.mappings()]
 
 
-async def save(sid, markdown, document, revision):
+async def save(sid, markdown, document, revision, reason="save"):
     session = await get(sid)
     async with get_engine().begin() as c:
-        result = await c.execute(update(d).where(d.c.id == session['document_id'], d.c.owner_id == OWNER, d.c.draft_revision == revision).values(draft=markdown, draft_document=document, draft_revision=revision + 1, title=title(markdown), updated_at=func.now()).returning(d.c.title, d.c.draft, d.c.draft_document, d.c.draft_revision, d.c.updated_at))
+        result = await c.execute(update(d).where(d.c.id == session['document_id'], d.c.owner_id == owner_id(), d.c.draft_revision == revision).values(draft=markdown, draft_document=document, draft_revision=revision + 1, title=title(markdown), updated_at=func.now()).returning(d.c.title, d.c.draft, d.c.draft_document, d.c.draft_revision, d.c.updated_at))
         saved = result.mappings().first()
         if saved is None:
             raise HTTPException(409, '다른 곳에서 수정된 문서입니다. 최신본을 열거나 사본으로 저장하세요.')
+        await history.append_version(c, session['document_id'], 'draft', markdown, document, revision+1, reason)
         session.update(saved)
     return session
 
 
-async def claim(sid, expected_state):
-    await get(sid)
+async def claim(sid, expected_state, key, kind, payload, base_revision=None, resolved_input=None):
+    session = await get(sid)
+    owner = owner_id()
+    base_revision = session["draft_revision"] if base_revision is None else base_revision
     token = uuid4().hex
     async with get_engine().begin() as c:
+        await c.execute(text('SELECT pg_advisory_xact_lock(hashtextextended(:key,0))'), {'key': owner+':'+key})
+        prior = (await c.execute(text('SELECT id,input_hash FROM jobs WHERE owner_id=:owner AND request_key=:key'), {'owner': owner, 'key': key})).mappings().first()
+        hashed = history.input_digest(sid, kind, payload)
+        if prior:
+            if prior['input_hash'] != hashed:
+                raise HTTPException(409, '같은 요청 키에 다른 입력을 사용할 수 없습니다.')
+            return prior['id'], False
         result = await c.execute(update(s).where(s.c.id == sid, s.c.status != 'running', s.c.state == encode(expected_state)).values(status='running', error=None, run_token=token))
         if not result.rowcount:
-            raise HTTPException(409, '현재 요청을 처리 중입니다.')
-    return token
+            raise HTTPException(409, '현재 요청을 처리 중이거나 상태가 변경됐습니다.')
+        revision = (await c.execute(text('SELECT draft_revision FROM documents WHERE id=:id FOR UPDATE'), {'id':session['document_id']})).scalar_one()
+        if revision != base_revision:
+            raise HTTPException(409, '초안이 변경됐습니다. 최신 내용을 확인하고 다시 요청하세요.')
+        await c.execute(text("INSERT INTO jobs(id,owner_id,session_id,request_key,input_hash,input,kind,status,base_revision) VALUES (:id,:owner,:sid,:key,:hash,CAST(:payload AS jsonb),:kind,'running',:revision)"), {'id': token, 'owner': owner, 'sid': sid, 'key': key, 'hash': hashed, 'payload': json.dumps({'request':payload,'resolved_input':resolved_input},ensure_ascii=False), 'kind': kind, 'revision': base_revision})
+        await c.execute(text("INSERT INTO agent_runs(id,job_id,status) VALUES (:id,:job,'running')"), {'id': uuid4().hex, 'job': token})
+    return token, True
 
 
-async def checkpoint(session, token, markdown, status='running', error=None):
+async def checkpoint(session, token, markdown, status='running', error=None, job_result=None):
     async with get_engine().begin() as c:
         result = await c.execute(update(s).where(s.c.id == session['id'], s.c.run_token == token).values(state=encode(session['state']), markdown=markdown, status=status, error=error, run_token=token if status == 'running' else None))
         if not result.rowcount:
             raise RuntimeError('실행 소유권이 변경되었습니다.')
         await c.execute(update(d).where(d.c.id == session['document_id']).values(updated_at=func.now()))
+        if status != 'running':
+            job_status = 'succeeded' if status == 'ready' else 'failed'
+            if status == 'ready' and job_result is None and markdown:
+                await history.append_version(c, session['document_id'], 'generated', markdown, reason='generation')
+            result = job_result if job_result is not None else {'markdown': markdown}
+            await c.execute(text('UPDATE jobs SET status=:status,result=CAST(:result AS jsonb),error=:error,finished_at=now() WHERE id=:id'), {'status': job_status, 'result': json.dumps(result,ensure_ascii=False), 'error': error, 'id': token})
+            await c.execute(text('UPDATE agent_runs SET status=:status,error=:error,finished_at=now() WHERE job_id=:id'), {'status': job_status, 'error': error, 'id': token})
